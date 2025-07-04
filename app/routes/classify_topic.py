@@ -1,6 +1,6 @@
-from fastapi import APIRouter
+from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
-from app.graph.engine import run_graph_flow
+from app.graph.nodes.classify_topic_node import check_mode
 
 router = APIRouter()
 
@@ -9,5 +9,15 @@ class QuestionInput(BaseModel):
 
 @router.post("/check-mode")
 def classify_question(data: QuestionInput):
-    result = run_graph_flow(data.question)
-    return result  # trả về dict {"status": ..., "message": ...}
+    """
+    Phân loại chủ đề câu hỏi
+    """
+    try:
+        result = check_mode(data.question)
+        return {
+            "status": "success" if result == "yes" else "rejected",
+            "message": "Câu hỏi thuộc chủ đề dinh dưỡng" if result == "yes" else "Câu hỏi không thuộc chủ đề dinh dưỡng",
+            "classification": result
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Lỗi phân loại: {str(e)}")

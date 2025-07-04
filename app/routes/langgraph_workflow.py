@@ -2,13 +2,17 @@ from fastapi import APIRouter, HTTPException, Depends, Header
 from pydantic import BaseModel
 from typing import Optional
 import jwt
-from app.graph.engine import run_langgraph_workflow
+from app.graph.engine import run_langgraph_workflow_until_emotion, continue_workflow_with_emotion
 from app.config import JWT_SECRET_KEY
 
 router = APIRouter()
 
 class WorkflowInput(BaseModel):
     question: str  # Chỉ cần question, user_id sẽ lấy từ token
+
+class EmotionInput(BaseModel):
+    session_id: str
+    emotion: str
 
 def get_user_id_from_token(authorization: Optional[str] = Header(None)) -> str:
     """
@@ -77,16 +81,41 @@ def process_with_langgraph(
     - question: Câu hỏi cần xử lý
     """
     try:
-        # Chạy LangGraph workflow với user_id từ token
-        result = run_langgraph_workflow(user_id, data.question)
-        
+        result = run_langgraph_workflow_until_emotion(user_id, data.question)
         return result
-        
     except Exception as e:
         raise HTTPException(
             status_code=500, 
             detail=f"Lỗi xử lý workflow: {str(e)}"
         )
+
+@router.post("/process-emotion")
+def process_emotion(
+    data: EmotionInput,
+    user_id: str = Depends(get_user_id_from_token)
+):
+    try:
+        result = continue_workflow_with_emotion(data.session_id, data.emotion)
+        return result
+    except Exception as e:
+        error_message = str(e)
+        
+        # Xử lý các lỗi cụ thể
+        if "Session expired or not found" in error_message:
+            raise HTTPException(
+                status_code=400,
+                detail="Session không tồn tại hoặc đã hết hạn. Vui lòng bắt đầu lại từ đầu."
+            )
+        elif "Session expired" in error_message:
+            raise HTTPException(
+                status_code=400,
+                detail="Session đã hết hạn. Vui lòng bắt đầu lại từ đầu."
+            )
+        else:
+            raise HTTPException(
+                status_code=500, 
+                detail=f"Lỗi xử lý workflow: {error_message}"
+            )
 
 @router.get("/workflow-info")
 def get_workflow_info():

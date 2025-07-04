@@ -180,5 +180,19 @@ class MongoService:
             print(f"Error saving BMI calculation: {e}")
             return False
 
+    def get_all_users(self) -> list:
+        """
+        Lấy tất cả users (cho mục đích test)
+        """
+        try:
+            users = list(self.users_collection.find({}))
+            # Convert ObjectId to string for each user
+            for user in users:
+                user["_id"] = str(user["_id"])
+            return users
+        except Exception as e:
+            print(f"Error getting all users: {e}")
+            return []
+
 # Tạo instance global
 mongo_service = MongoService() 

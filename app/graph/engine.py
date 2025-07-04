@@ -1,11 +1,18 @@
 from langgraph.graph import StateGraph, END
-from typing import Dict, Any, TypedDict, Annotated
+from typing import Dict, Any, TypedDict, Annotated, Optional
 from app.graph.nodes.classify_topic_node import check_mode
 from app.graph.nodes.calculate_bmi_node import calculate_bmi_from_user_id
+from app.graph.nodes.query_neo4j_node import query_neo4j_for_foods
+# from app.graph.nodes.llm_check_food_suitability_node import check_food_suitability
+from app.graph.nodes.food_rerank_node import rerank_foods_by_suitability
+# from app.graph.nodes.fallback_query_node import create_fallback_query
 from app.services.mongo_service import mongo_service
 import jwt
 import os
 from datetime import datetime
+from app.graph.nodes.select_emotion_node import select_emotion_node
+from app.utils.session_store import save_state_to_redis, load_state_from_redis
+from fastapi import HTTPException
 
 # Định nghĩa state cho LangGraph
 class WorkflowState(TypedDict):
@@ -14,14 +21,18 @@ class WorkflowState(TypedDict):
     user_data: Dict[str, Any]
     topic_classification: str
     bmi_result: Dict[str, Any]
+    neo4j_result: Dict[str, Any]
+    llm_check_result: Optional[Dict[str, Any]]
+    reranked_foods: Optional[Dict[str, Any]]
+    fallback_attempt: Optional[int]
     final_result: Dict[str, Any]
     error: str
     step: str
+    emotion_prompt: Optional[dict]
+    selected_emotion: Optional[str]
 
 def identify_user(state: WorkflowState) -> WorkflowState:
-    """
-    Node 1: Xác định user từ user_id (chỉ từ token, không từ email)
-    """
+    """Node 1: Xác định user từ user_id """
     try:
         # Lấy user_id từ state (được truyền từ API)
         user_id = state.get("user_id")
@@ -64,9 +75,7 @@ def identify_user(state: WorkflowState) -> WorkflowState:
         }
 
 def classify_topic(state: WorkflowState) -> WorkflowState:
-    """
-    Node 2: Phân loại chủ đề câu hỏi
-    """
+    """Node 2: Phân loại chủ đề câu hỏi"""
     try:
         question = state.get("question", "")
         if not question:
@@ -92,10 +101,25 @@ def classify_topic(state: WorkflowState) -> WorkflowState:
             "step": "topic_classification_error"
         }
 
+def select_emotion_node_wrapper(state: WorkflowState) -> WorkflowState:
+    """ Node 3: Yêu cầu người dùng chọn cảm xúc hiện tại """
+    try:
+        # Gọi node cảm xúc
+        emotion_prompt = select_emotion_node()
+        return {
+            **state,
+            "emotion_prompt": emotion_prompt,
+            "step": "emotion_selected"
+        }
+    except Exception as e:
+        return {
+            **state,
+            "error": f"Lỗi chọn cảm xúc: {str(e)}",
+            "step": "emotion_selection_error"
+        }
+
 def calculate_bmi(state: WorkflowState) -> WorkflowState:
-    """
-    Node 3: Tính BMI cho user
-    """
+    """ Node 4: Tính BMI cho user """
     try:
         user_id = state.get("user_id")
         if not user_id:
@@ -127,19 +151,171 @@ def calculate_bmi(state: WorkflowState) -> WorkflowState:
             "step": "bmi_calculation_error"
         }
 
+def query_neo4j(state: WorkflowState) -> WorkflowState:
+    """ Node 5: Truy vấn Neo4j để tìm thực phẩm phù hợp """
+    try:
+        user_data = state.get("user_data", {})
+        if not user_data:
+            return {
+                **state,
+                "error": "Không có thông tin user để truy vấn Neo4j",
+                "step": "neo4j_query_failed"
+            }
+        
+        # Kiểm tra xem có phải fallback query không
+        fallback_attempt = state.get("fallback_attempt", 0)
+        
+        if fallback_attempt > 0:
+            # Tạo fallback query
+            fallback_result = create_fallback_query(user_data, fallback_attempt)
+            if fallback_result["status"] == "success":
+                # Sử dụng fallback query
+                from app.services.neo4j_service import neo4j_service
+                query = fallback_result["query"]
+                params = fallback_result["params"]
+                
+                result = neo4j_service.run_query(query, params)
+                neo4j_result = {
+                    "status": "success",
+                    "data": result,
+                    "fallback_level": fallback_attempt,
+                    "message": f"Kết quả từ fallback query level {fallback_attempt}"
+                }
+            else:
+                return {
+                    **state,
+                    "error": f"Lỗi tạo fallback query: {fallback_result['message']}",
+                    "step": "fallback_query_error"
+                }
+        else:
+            # Truy vấn Neo4j bình thường
+            neo4j_result = query_neo4j_for_foods(user_data)
+        
+        return {
+            **state,
+            "neo4j_result": neo4j_result,
+            "step": "neo4j_queried"
+        }
+        
+    except Exception as e:
+        return {
+            **state,
+            "error": f"Lỗi truy vấn Neo4j: {str(e)}",
+            "step": "neo4j_query_error"
+        }
+
+        # def check_food_suitability_llm(state: WorkflowState) -> WorkflowState:
+        #     """ Node 6: Kiểm tra tính phù hợp của thực phẩm bằng LLM """
+        #     try:
+        #         neo4j_result = state.get("neo4j_result", {})
+        #         user_data = state.get("user_data", {})
+        #         selected_emotion = state.get("selected_emotion", "")
+        #         bmi_result = state.get("bmi_result", {})
+        #         fallback_attempt = state.get("fallback_attempt", 0)
+                
+        #         if not neo4j_result or neo4j_result.get("status") != "success":
+        #             return {
+        #                 **state,
+        #                 "error": "Không có kết quả Neo4j để kiểm tra",
+        #                 "step": "llm_check_failed"
+        #             }
+                
+        #         # Tạo context cho LLM
+        #         user_context = {
+        #             "emotion": selected_emotion,
+        #             "bmi_category": bmi_result.get("bmi_category", ""),
+        #             "medical_conditions": user_data.get("medicalConditions", [])
+        #         }
+                
+        #         # Kiểm tra tính phù hợp
+        #         llm_result = check_food_suitability(neo4j_result, user_context)
+        #         llm_response = llm_result.get("response", "").lower().strip()
+                
+        #         # Nếu LLM trả về "no" và chưa vượt quá 3 lần fallback thì tăng biến
+        #         if "yes" in llm_response:
+        #             return {
+        #                 **state,
+        #                 "llm_check_result": llm_result,
+        #                 "step": "llm_checked"
+        #             }
+        #         else:
+        #             if fallback_attempt < 3:
+        #                 return {
+        #                     **state,
+        #                     "llm_check_result": llm_result,
+        #                     "fallback_attempt": fallback_attempt + 1,
+        #                     "step": "llm_checked"
+        #                 }
+        #             else:
+        #                 return {
+        #                     **state,
+        #                     "llm_check_result": llm_result,
+        #                     "step": "llm_checked"
+        #                 }
+                
+        #     except Exception as e:
+        #         return {
+        #             **state,
+        #             "error": f"Lỗi kiểm tra LLM: {str(e)}",
+        #             "step": "llm_check_error"
+        #         }
+
+def rerank_foods(state: WorkflowState) -> WorkflowState:
+    try:
+        neo4j_result = state.get("neo4j_result", {})
+        user_data = state.get("user_data", {})
+        selected_emotion = state.get("selected_emotion", "")
+        bmi_result = state.get("bmi_result", {})
+        if not neo4j_result or neo4j_result.get("status") != "success":
+            return {
+                **state,
+                "error": "Không có kết quả Neo4j để sắp xếp lại",
+                "step": "rerank_failed"
+            }
+        user_context = {
+            "emotion": selected_emotion,
+            "bmi_category": bmi_result.get("bmi_category", ""),
+            "medical_conditions": user_data.get("medicalConditions", [])
+        }
+        reranked_result = rerank_foods_by_suitability(neo4j_result, user_context)
+        # Chỉ lấy tối đa 3 món cho mỗi tình trạng bệnh
+        foods = reranked_result.get("foods", {})
+        for condition, food_data in foods.items():
+            if isinstance(food_data, dict) and "advanced" in food_data:
+                advanced = food_data["advanced"][:3]
+                reranked_result["foods"][condition]["advanced"] = advanced
+        return {
+            **state,
+            "reranked_foods": reranked_result,
+            "step": "foods_reranked"
+        }
+    except Exception as e:
+        return {
+            **state,
+            "error": f"Lỗi sắp xếp lại thực phẩm: {str(e)}",
+            "step": "rerank_error"
+        }
+
 def generate_final_result(state: WorkflowState) -> WorkflowState:
-    """
-    Node 4: Tạo kết quả cuối cùng
-    """
+    """ Node 8: Tạo kết quả cuối cùng """
     try:
         user_data = state.get("user_data", {})
         question = state.get("question", "")
         topic_classification = state.get("topic_classification", "")
         bmi_result = state.get("bmi_result", {})
-        
+        neo4j_result = state.get("neo4j_result", {})
+        # llm_check_result = state.get("llm_check_result", {})
+        reranked_foods = state.get("reranked_foods", {})
+        # fallback_attempt = state.get("fallback_attempt", 0)
+        selected_emotion = state.get("selected_emotion")
+
         # Tạo message chi tiết với các chỉ số
         message_parts = []
         
+        # Thêm cảm xúc vào message nếu có
+        if selected_emotion:
+            message_parts.append(f"Cảm xúc: {selected_emotion}")
+
         if bmi_result:
             bmi = bmi_result.get("bmi", "N/A")
             bmi_category = bmi_result.get("bmi_category", "N/A")
@@ -160,24 +336,98 @@ def generate_final_result(state: WorkflowState) -> WorkflowState:
             conditions_str = ", ".join(medical_conditions)
             message_parts.append(f"Tình trạng bệnh: {conditions_str}")
         
+        # Thêm thông tin thực phẩm từ Neo4j nếu có
+        if neo4j_result and neo4j_result.get("status") == "success":
+            # Sử dụng kết quả đã sắp xếp lại nếu có
+            if reranked_foods and reranked_foods.get("status") == "success":
+                foods = reranked_foods.get("foods", {})
+                statistics = reranked_foods.get("statistics", {})
+                message_parts.append("(Đã sắp xếp lại theo mức độ phù hợp)")
+            else:
+                foods = neo4j_result.get("foods", {})
+                statistics = neo4j_result.get("statistics", {})
+            
+            def get_unique_food_names(food_list):
+                seen = set()
+                result = []
+                for food in food_list:
+                    key = food.get("dish_id") or food.get("id") or food.get("dish_name") or food.get("name")
+                    name = food.get("dish_name", food.get("name", "Unknown"))
+                    if key not in seen:
+                        seen.add(key)
+                        result.append(name)
+                return result
+            
+            if foods:
+                # Thêm thông tin thực phẩm cơ bản
+                food_info = []
+                for condition, food_data in foods.items():
+                    if isinstance(food_data, dict) and "advanced" in food_data:
+                        # Dữ liệu mới từ schema graph
+                        advanced_foods = food_data.get("advanced", [])
+                        food_names = get_unique_food_names(advanced_foods)
+                        if food_names:
+                            food_info.append(f"{condition}: {', '.join(food_names)}")
+                    else:
+                        # Dữ liệu cũ
+                        food_names = get_unique_food_names(food_data)
+                        if food_names:
+                            food_info.append(f"{condition}: {', '.join(food_names)}")
+                
+                if food_info:
+                    message_parts.append(f"Thực phẩm phù hợp: {'; '.join(food_info)}")
+                
+                # Thêm thống kê nếu có
+                if statistics:
+                    total_foods = statistics.get("total_foods", 0)
+                    total_diets = statistics.get("total_diets", 0)
+                    total_cook_methods = statistics.get("total_cook_methods", 0)
+                    
+                    if total_foods > 0:
+                        message_parts.append(f"Tổng: {total_foods} món, {total_diets} chế độ ăn, {total_cook_methods} phương pháp nấu")
+            
+            # Thêm thông tin chế độ ăn và phương pháp nấu
+            diet_recommendations = neo4j_result.get("diet_recommendations", {})
+            cook_methods = neo4j_result.get("cook_methods", {})
+            
+            if diet_recommendations:
+                all_diets = set()
+                for diets in diet_recommendations.values():
+                    all_diets.update(diets)
+                if all_diets:
+                    message_parts.append(f"Chế độ ăn: {', '.join(list(all_diets)[:3])}")
+            
+            if cook_methods:
+                all_methods = set()
+                for methods in cook_methods.values():
+                    all_methods.update(methods)
+                if all_methods:
+                    message_parts.append(f"Phương pháp nấu: {', '.join(list(all_methods)[:3])}")
+        
+        # Kiểm tra nếu đã thử hết fallback mà vẫn không có kết quả
+        # if fallback_attempt >= 3 and (not foods or not any(foods.values())):
+        #     detailed_message = "Nhóm đang phát triển và chưa có món ăn phù hợp cho trường hợp của bạn. Vui lòng thử lại sau."
+        #     final_result = {
+        #         "status": "no_suitable_food",
+        #         "message": detailed_message,
+        #         "fallback_attempts": fallback_attempt,
+        #         "timestamp": datetime.now().isoformat(),
+        #         "step": "no_suitable_food_found"
+        #     }
+        # else:
+        #     ...
+
         # Tạo message hoàn chỉnh
         detailed_message = " | ".join(message_parts)
         
+        # Khi trả về kết quả, đừng trả về fallback_attempts nữa
         final_result = {
             "status": "success",
             "message": detailed_message,
-            "user_info": {
-                "name": user_name,
-                "user_id": state.get("user_id"),
-                "authenticated": True,
-                "age": user_age,
-                "weight": user_weight,
-                "height": user_height,
-                "medical_conditions": medical_conditions
-            },
-            "question": question,
-            "topic_classification": topic_classification,
-            "bmi_data": bmi_result,
+            "neo4j_data": neo4j_result,
+            # "llm_check": llm_check_result,
+            "reranked_data": reranked_foods,
+            # "fallback_attempts": fallback_attempt,
             "timestamp": datetime.now().isoformat(),
             "step": "complete"
         }
@@ -187,7 +437,6 @@ def generate_final_result(state: WorkflowState) -> WorkflowState:
             "final_result": final_result,
             "step": "result_generated"
         }
-        
     except Exception as e:
         return {
             **state,
@@ -196,27 +445,28 @@ def generate_final_result(state: WorkflowState) -> WorkflowState:
         }
 
 def should_continue(state: WorkflowState) -> str:
-    """
-    Router: Quyết định bước tiếp theo dựa trên state
-    """
-    # Nếu có lỗi, dừng
     if state.get("error"):
         return "end_with_error"
-    
     step = state.get("step", "")
-    
     if step == "user_identified":
         return "classify_topic"
     elif step == "topic_classified":
-        # Nếu không thuộc chủ đề dinh dưỡng, dừng
         if state.get("topic_classification") == "no":
             return "end_rejected"
-        return "calculate_bmi"
+        return "select_emotion"
+    elif step == "emotion_selected":
+        if state.get("selected_emotion"):
+            return "calculate_bmi"
+        else:
+            return "end_success"
     elif step == "bmi_calculated":
+        return "query_neo4j"
+    elif step == "neo4j_queried":
+        return "rerank_foods"
+    elif step == "foods_reranked":
         return "generate_result"
     elif step == "result_generated":
         return "end_success"
-    
     return "end_with_error"
 
 def end_with_error(state: WorkflowState) -> WorkflowState:
@@ -271,25 +521,28 @@ def end_rejected(state: WorkflowState) -> WorkflowState:
     }
 
 def end_success(state: WorkflowState) -> WorkflowState:
-    """Kết thúc thành công"""
+    """
+    Kết thúc thành công. Node này không làm gì cả, 
+    chỉ trả về state hiện tại để giữ nguyên final_result đã được tạo ở node trước.
+    """
     return state
 
 # Tạo LangGraph workflow
 def create_workflow() -> StateGraph:
     """Tạo LangGraph workflow"""
-    
     # Tạo graph
     workflow = StateGraph(WorkflowState)
-    
     # Thêm nodes
     workflow.add_node("identify_user", identify_user)
     workflow.add_node("classify_topic", classify_topic)
+    workflow.add_node("select_emotion", select_emotion_node_wrapper)
     workflow.add_node("calculate_bmi", calculate_bmi)
+    workflow.add_node("query_neo4j", query_neo4j)
+    workflow.add_node("rerank_foods", rerank_foods)
     workflow.add_node("generate_result", generate_final_result)
     workflow.add_node("end_with_error", end_with_error)
     workflow.add_node("end_rejected", end_rejected)
     workflow.add_node("end_success", end_success)
-    
     # Thêm router
     workflow.add_conditional_edges(
         "identify_user",
@@ -299,26 +552,48 @@ def create_workflow() -> StateGraph:
             "end_with_error": "end_with_error"
         }
     )
-    
     workflow.add_conditional_edges(
         "classify_topic",
         should_continue,
         {
-            "calculate_bmi": "calculate_bmi",
+            "select_emotion": "select_emotion",
             "end_rejected": "end_rejected",
             "end_with_error": "end_with_error"
         }
     )
-    
+    workflow.add_conditional_edges(
+        "select_emotion",
+        should_continue,
+        {
+            "calculate_bmi": "calculate_bmi",
+            "end_success": "end_success",
+            "end_with_error": "end_with_error"
+        }
+    )
     workflow.add_conditional_edges(
         "calculate_bmi",
+        should_continue,
+        {
+            "query_neo4j": "query_neo4j",
+            "end_with_error": "end_with_error"
+        }
+    )
+    workflow.add_conditional_edges(
+        "query_neo4j",
+        should_continue,
+        {
+            "rerank_foods": "rerank_foods",
+            "end_with_error": "end_with_error"
+        }
+    )
+    workflow.add_conditional_edges(
+        "rerank_foods",
         should_continue,
         {
             "generate_result": "generate_result",
             "end_with_error": "end_with_error"
         }
     )
-    
     workflow.add_conditional_edges(
         "generate_result",
         should_continue,
@@ -327,79 +602,101 @@ def create_workflow() -> StateGraph:
             "end_with_error": "end_with_error"
         }
     )
-    
     # Set entry point
     workflow.set_entry_point("identify_user")
-    
     # Add end nodes
     workflow.add_edge("end_with_error", END)
     workflow.add_edge("end_rejected", END)
     workflow.add_edge("end_success", END)
-    
     return workflow
 
 # Tạo workflow instance
 workflow_graph = create_workflow().compile()
 
-def run_langgraph_workflow(user_id: str, question: str) -> Dict[str, Any]:
-    """
-    Chạy LangGraph workflow với user_id và question
-    """
+def run_langgraph_workflow_until_emotion(user_id: str, question: str) -> dict:
     try:
-        # Khởi tạo state
         initial_state = {
             "user_id": user_id,
             "question": question,
             "user_data": {},
             "topic_classification": "",
             "bmi_result": {},
+            "neo4j_result": {},
+            "reranked_foods": None,
+            "fallback_attempt": 0,
             "final_result": {},
             "error": "",
-            "step": "start"
+            "step": "start",
+            "emotion_prompt": None,
+            "selected_emotion": None
         }
-        
-        # Chạy workflow
         result = workflow_graph.invoke(initial_state)
-        
-        # Trả về kết quả cuối cùng
+
+        # Nếu workflow dừng lại để hỏi cảm xúc
+        if result.get("step") == "emotion_selected" and result.get("emotion_prompt"):
+            try:
+                session_id = save_state_to_redis(result)
+                return {
+                    "status": "need_emotion",
+                    "emotion_prompt": result["emotion_prompt"],
+                    "session_id": session_id
+                }
+            except Exception as e:
+                # Log a more specific error
+                print(f"Error saving session state: {str(e)}")
+                raise HTTPException(status_code=500, detail="Lỗi lưu trạng thái workflow")
+
+        # Các trường hợp kết thúc khác, trả về final_result
         return result.get("final_result", {
             "status": "error",
-            "message": "Không có kết quả"
+            "message": "Không có kết quả hoặc workflow kết thúc bất thường"
         })
-        
     except Exception as e:
-        return {
-            "status": "error",
-            "message": f"Lỗi chạy workflow: {str(e)}"
-        }
+        print(f"Error in run_langgraph_workflow_until_emotion: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Lỗi chạy workflow: {str(e)}")
+
+def continue_workflow_with_emotion(session_id: str, emotion: str) -> dict:
+    state = load_state_from_redis(session_id)
+    state["selected_emotion"] = emotion
+
+    result = workflow_graph.invoke(state)
+    return result.get("final_result", {
+        "status": "error",
+        "message": "Không có kết quả"
+    })
 
 # Legacy function để tương thích - Cập nhật thành luồng hoàn chỉnh
-def run_graph_flow(input_text: str, user_id: str = None) -> dict:
-    """
-    Luồng hoàn chỉnh: Phân loại topic + Tính BMI + Tạo kết quả
-    """
-    try:
-        # Nếu không có user_id, chỉ phân loại topic
-        if not user_id:
-            classification = check_mode(input_text)
+# def run_graph_flow(input_text: str, user_id: str = None) -> dict:
+#     """
+#     Luồng hoàn chỉnh: Phân loại topic + Tính BMI + Tạo kết quả
+#     """
+#     try:
+#         # Nếu không có user_id, chỉ phân loại topic
+#         if not user_id:
+#             classification = check_mode(input_text)
             
-            if classification == "no":
-                return {
-                    "status": "rejected",
-                    "message": "Câu hỏi không thuộc chủ đề dinh dưỡng."
-                }
+#             if classification == "no":
+#                 return {
+#                     "status": "rejected",
+#                     "message": "Câu hỏi không thuộc chủ đề dinh dưỡng."
+#                 }
             
-            return {
-                "status": "accepted",
-                "message": "Câu hỏi thuộc chủ đề dinh dưỡng. Vui lòng cung cấp user_id để tính BMI.",
-                "topic_classification": classification
-            }
+#             return {
+#                 "status": "accepted",
+#                 "message": "Câu hỏi thuộc chủ đề dinh dưỡng. Vui lòng cung cấp user_id để tính BMI.",
+#                 "topic_classification": classification
+#             }
         
-        # Nếu có user_id, chạy luồng hoàn chỉnh
-        return run_langgraph_workflow(user_id, input_text)
+#         # Nếu có user_id, chạy luồng hoàn chỉnh
+#         try:
+#             return run_langgraph_workflow_until_emotion(user_id, input_text)
+#         except HTTPException as e:
+#             return {"status": "error", "message": e.detail}
+#         except Exception as e:
+#             return {"status": "error", "message": str(e)}
         
-    except Exception as e:
-        return {
-            "status": "error",
-            "message": f"Lỗi xử lý: {str(e)}"
-        }
+#     except Exception as e:
+#         return {
+#             "status": "error",
+#             "message": f"Lỗi xử lý: {str(e)}"
+#         }

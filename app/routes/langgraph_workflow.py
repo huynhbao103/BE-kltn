@@ -18,6 +18,11 @@ class CookingMethodInput(BaseModel):
     session_id: str
     cooking_methods: List[str]
 
+class EmotionAndCookingInput(BaseModel):
+    session_id: str
+    emotion: str
+    cooking_methods: List[str]
+
 def get_user_id_from_token(authorization: Optional[str] = Header(None)) -> str:
     """
     Lấy user_id từ JWT token trong Authorization header
@@ -94,48 +99,30 @@ def process_with_langgraph(
             detail=f"Lỗi xử lý workflow: {str(e)}"
         )
 
-@router.post("/process-emotion")
-def process_emotion(
-    data: EmotionInput,
+@router.post("/process-emotion-cooking")
+def process_emotion_and_cooking(
+    data: EmotionAndCookingInput,
     user_id: str = Depends(get_user_id_from_token)
 ):
+    """
+    Nhận cảm xúc và phương pháp chế biến cùng lúc, trả về kết quả cuối cùng.
+    """
     try:
-        result = continue_workflow_with_emotion(data.session_id, data.emotion)
-        return result
+        # Lấy state từ session
+        from app.utils.session_store import load_state_from_redis
+        from app.graph.engine import workflow_graph
+        state = load_state_from_redis(data.session_id)
+        state["selected_emotion"] = data.emotion
+        state["selected_cooking_methods"] = data.cooking_methods
+        # Đặt step để workflow tiếp tục từ sau khi đã chọn cả hai
+        state["step"] = "cooking_method_selected"
+        result = workflow_graph.invoke(state)
+        return result.get("final_result", {
+            "status": "error",
+            "message": "Không có kết quả"
+        })
     except Exception as e:
         error_message = str(e)
-        
-        # Xử lý các lỗi cụ thể
-        if "Session expired or not found" in error_message:
-            raise HTTPException(
-                status_code=400,
-                detail="Session không tồn tại hoặc đã hết hạn. Vui lòng bắt đầu lại từ đầu."
-            )
-        elif "Session expired" in error_message:
-            raise HTTPException(
-                status_code=400,
-                detail="Session đã hết hạn. Vui lòng bắt đầu lại từ đầu."
-            )
-        else:
-            raise HTTPException(
-                status_code=500, 
-                detail=f"Lỗi xử lý workflow: {error_message}"
-            )
-
-
-
-@router.post("/process-cooking-method")
-def process_cooking_method(
-    data: CookingMethodInput,
-    user_id: str = Depends(get_user_id_from_token)
-):
-    try:
-        result = continue_workflow_with_cooking_method(data.session_id, data.cooking_methods)
-        return result
-    except Exception as e:
-        error_message = str(e)
-        
-        # Xử lý các lỗi cụ thể
         if "Session expired or not found" in error_message:
             raise HTTPException(
                 status_code=400,
@@ -230,6 +217,15 @@ def get_workflow_info():
                     "description": "Tiếp tục workflow sau khi chọn phương pháp nấu",
                     "body": {
                         "session_id": "ID session từ response trước",
+                        "cooking_methods": ["Luộc", "Xào", "Nướng"]
+                    }
+                },
+                "/process-emotion-cooking": {
+                    "method": "POST",
+                    "description": "Nhận cảm xúc và phương pháp chế biến cùng lúc, trả về kết quả cuối cùng",
+                    "body": {
+                        "session_id": "ID session từ response trước",
+                        "emotion": "Cảm xúc đã chọn",
                         "cooking_methods": ["Luộc", "Xào", "Nướng"]
                     }
                 }

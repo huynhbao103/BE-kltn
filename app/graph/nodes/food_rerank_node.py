@@ -45,6 +45,16 @@ def rerank_foods_by_suitability(foods_data: Dict[str, Any], user_context: Dict[s
                     elif emotion == "Vui vẻ":
                         if "nướng" in cook_method or "xiên" in dish_name:
                             score += 3
+                    elif emotion == "Buồn bã":
+                        if "súp" in dish_name or "súp" in cook_method:
+                            score += 3
+                        if "hấp" in cook_method or "luộc" in cook_method:
+                            score += 2
+                        if "gà" in dish_name or "cá" in dish_name:
+                            score += 1
+                    else:
+                        # Cảm xúc khác, cho điểm cơ bản
+                        score += 1
                     
                     # Điểm cho BMI
                     if bmi_category == "Gầy":
@@ -55,11 +65,21 @@ def rerank_foods_by_suitability(foods_data: Dict[str, Any], user_context: Dict[s
                             score += 2
                     
                     # Điểm cho bệnh lý
-                    if "Đái tháo đường" in condition:
+                    if "Đái tháo đường" in condition or "Tiểu đường" in condition:
                         if "gạo lứt" in dish_name or "khoai lang" in dish_name:
                             score += 3
                         if "ít đường" in diet_name or "kiểm soát đường" in diet_name:
                             score += 2
+                    elif "Cao huyết áp" in condition:
+                        if "luộc" in cook_method or "hấp" in cook_method:
+                            score += 3
+                        if "giảm muối" in diet_name or "ít muối" in diet_name:
+                            score += 2
+                        if "cá" in dish_name or "rau" in dish_name:
+                            score += 1
+                    else:
+                        # Bệnh lý khác, cho điểm cơ bản
+                        score += 1
                     
                     scored_foods.append((food, score))
                 

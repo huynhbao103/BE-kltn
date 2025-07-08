@@ -32,13 +32,13 @@ class GraphSchemaService:
     def get_node_properties(label: str = None):
         """Lấy properties của các nodes theo label"""
         if label:
-            query = """
-            MATCH (n:$label)
+            query = f"""
+            MATCH (n:{label})
             RETURN DISTINCT keys(n) as properties
             LIMIT 1
             """
             with driver.session() as session:
-                result = session.run(query, label=label)
+                result = session.run(query)
                 return [record["properties"] for record in result]
         else:
             query = """
@@ -82,35 +82,35 @@ class GraphSchemaService:
     @staticmethod
     def get_node_count(label: str):
         """Đếm số lượng nodes của một label"""
-        query = """
-        MATCH (n:$label)
+        query = f"""
+        MATCH (n:{label})
         RETURN count(n) as count
         """
         with driver.session() as session:
-            result = session.run(query, label=label)
+            result = session.run(query)
             return result.single()["count"]
     
     @staticmethod
     def get_relationship_count(rel_type: str):
         """Đếm số lượng relationships của một type"""
-        query = """
-        MATCH ()-[r:$rel_type]->()
+        query = f"""
+        MATCH ()-[r:{rel_type}]->()
         RETURN count(r) as count
         """
         with driver.session() as session:
-            result = session.run(query, rel_type=rel_type)
+            result = session.run(query)
             return result.single()["count"]
     
     @staticmethod
     def get_relationship_connections(rel_type: str):
         """Lấy thông tin về các kết nối của relationship type"""
-        query = """
-        MATCH (a)-[r:$rel_type]->(b)
+        query = f"""
+        MATCH (a)-[r:{rel_type}]->(b)
         RETURN DISTINCT labels(a) as from_labels, labels(b) as to_labels, count(r) as count
         ORDER BY count DESC
         """
         with driver.session() as session:
-            result = session.run(query, rel_type=rel_type)
+            result = session.run(query)
             return [record.data() for record in result]
     
     @staticmethod
@@ -124,7 +124,7 @@ class GraphSchemaService:
             query = f"""
             MATCH (n:{label})
             RETURN n
-            LIMIT 3
+            LIMIT 300
             """
             with driver.session() as session:
                 result = session.run(query)
@@ -231,4 +231,97 @@ class GraphSchemaService:
         """
         with driver.session() as session:
             result = session.run(query)
-            return [record.data() for record in result] 
+            return [record.data() for record in result]
+    
+    @staticmethod
+    def get_foods_by_emotion(emotion: str):
+        """Truy vấn thực phẩm phù hợp với cảm xúc"""
+        # Fallback: trả về tất cả món ăn nếu không có relationship với emotion
+        query = """
+        MATCH (dish:Dish)
+        RETURN DISTINCT 
+            dish.name AS dish_name,
+            dish.id AS dish_id,
+            $emotion AS emotion,
+            dish.description AS description
+        ORDER BY dish.name
+        """
+        with driver.session() as session:
+            result = session.run(query, emotion=emotion)
+            return [record.data() for record in result]
+    
+    @staticmethod
+    def get_foods_by_cooking_method(cooking_method: str):
+        """Truy vấn thực phẩm theo phương pháp nấu (không phân biệt hoa thường)"""
+        query = """
+        MATCH (cm:CookMethod)
+        WHERE toLower(cm.name) = toLower($cooking_method)
+        MATCH (cm)-[:ĐƯỢC_DÙNG_TRONG]->(dish:Dish)
+        RETURN DISTINCT 
+            dish.name AS dish_name,
+            dish.id AS dish_id,
+            cm.name AS cook_method,
+            dish.description AS description
+        ORDER BY dish.name
+        """
+        with driver.session() as session:
+            result = session.run(query, cooking_method=cooking_method)
+            return [record.data() for record in result]
+    
+    @staticmethod
+    def get_popular_foods(limit: int = None):
+        """Truy vấn thực phẩm phổ biến"""
+        if limit:
+            query = """
+            MATCH (dish:Dish)
+            RETURN DISTINCT 
+                dish.name AS dish_name,
+                dish.id AS dish_id,
+                dish.description AS description
+            ORDER BY dish.name
+            LIMIT $limit
+            """
+            with driver.session() as session:
+                result = session.run(query, limit=limit)
+                return [record.data() for record in result]
+        else:
+            query = """
+            MATCH (dish:Dish)
+            RETURN DISTINCT 
+                dish.name AS dish_name,
+                dish.id AS dish_id,
+                dish.description AS description
+            ORDER BY dish.name
+            """
+            with driver.session() as session:
+                result = session.run(query)
+                return [record.data() for record in result]
+    
+    @staticmethod
+    def get_healthy_foods(limit: int = None):
+        """Truy vấn thực phẩm tốt cho sức khỏe"""
+        if limit:
+            query = """
+            MATCH (dish:Dish)
+            RETURN DISTINCT 
+                dish.name AS dish_name,
+                dish.id AS dish_id,
+                dish.description AS description
+            ORDER BY dish.name
+            LIMIT $limit
+            """
+            with driver.session() as session:
+                result = session.run(query, limit=limit)
+                return [record.data() for record in result]
+        else:
+            query = """
+            MATCH (dish:Dish)
+            RETURN DISTINCT 
+                dish.name AS dish_name,
+                dish.id AS dish_id,
+                dish.description AS description
+            ORDER BY dish.name
+            """
+            with driver.session() as session:
+                result = session.run(query)
+                return [record.data() for record in result] 

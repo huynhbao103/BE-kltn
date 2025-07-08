@@ -7,7 +7,7 @@ client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
 
 def check_mode(user_question: str) -> str:
     prompt = f"""
-Câu sau có thuộc chủ đề dinh dưỡng, món ăn, sức khỏe hoặc bệnh lý không?
+Câu sau có thuộc chủ đề hỏi về hôm nay ăn gì không?
 Trả lời duy nhất "yes" hoặc "no".
 Câu hỏi: "{user_question}"
 """

@@ -1,5 +1,5 @@
 from langgraph.graph import StateGraph, END
-from typing import Dict, Any, TypedDict, Annotated, Optional
+from typing import Dict, Any, TypedDict, Annotated, Optional, List
 from app.graph.nodes.classify_topic_node import check_mode
 from app.graph.nodes.calculate_bmi_node import calculate_bmi_from_user_id
 from app.graph.nodes.query_neo4j_node import query_neo4j_for_foods
@@ -11,6 +11,7 @@ import jwt
 import os
 from datetime import datetime
 from app.graph.nodes.select_emotion_node import select_emotion_node
+from app.graph.nodes.select_cooking_method_node import select_cooking_method_node
 from app.utils.session_store import save_state_to_redis, load_state_from_redis
 from fastapi import HTTPException
 
@@ -30,6 +31,8 @@ class WorkflowState(TypedDict):
     step: str
     emotion_prompt: Optional[dict]
     selected_emotion: Optional[str]
+    cooking_method_prompt: Optional[dict]
+    selected_cooking_methods: Optional[List[str]]
 
 def identify_user(state: WorkflowState) -> WorkflowState:
     """Node 1: Xác định user từ user_id """
@@ -104,13 +107,21 @@ def classify_topic(state: WorkflowState) -> WorkflowState:
 def select_emotion_node_wrapper(state: WorkflowState) -> WorkflowState:
     """ Node 3: Yêu cầu người dùng chọn cảm xúc hiện tại """
     try:
-        # Gọi node cảm xúc
-        emotion_prompt = select_emotion_node()
-        return {
-            **state,
-            "emotion_prompt": emotion_prompt,
-            "step": "emotion_selected"
-        }
+        # Kiểm tra xem đã có selected_emotion chưa
+        if state.get("selected_emotion"):
+            # Nếu đã chọn cảm xúc, tiếp tục đến node tiếp theo
+            return {
+                **state,
+                "step": "emotion_selected"
+            }
+        else:
+            # Nếu chưa chọn, tạo prompt và dừng lại
+            emotion_prompt = select_emotion_node()
+            return {
+                **state,
+                "emotion_prompt": emotion_prompt,
+                "step": "emotion_prompt_generated"
+            }
     except Exception as e:
         return {
             **state,
@@ -118,8 +129,35 @@ def select_emotion_node_wrapper(state: WorkflowState) -> WorkflowState:
             "step": "emotion_selection_error"
         }
 
+
+
+def select_cooking_method_node_wrapper(state: WorkflowState) -> WorkflowState:
+    """ Node 4: Yêu cầu người dùng chọn phương pháp nấu """
+    try:
+        # Kiểm tra xem đã có selected_cooking_methods chưa
+        if state.get("selected_cooking_methods"):
+            # Nếu đã chọn phương pháp nấu, tiếp tục đến node tiếp theo
+            return {
+                **state,
+                "step": "cooking_method_selected"
+            }
+        else:
+            # Nếu chưa chọn, tạo prompt và dừng lại
+            cooking_method_prompt = select_cooking_method_node()
+            return {
+                **state,
+                "cooking_method_prompt": cooking_method_prompt,
+                "step": "cooking_method_prompt_generated"
+            }
+    except Exception as e:
+        return {
+            **state,
+            "error": f"Lỗi chọn phương pháp nấu: {str(e)}",
+            "step": "cooking_method_selection_error"
+        }
+
 def calculate_bmi(state: WorkflowState) -> WorkflowState:
-    """ Node 4: Tính BMI cho user """
+    """ Node 5: Tính BMI cho user """
     try:
         user_id = state.get("user_id")
         if not user_id:
@@ -152,7 +190,7 @@ def calculate_bmi(state: WorkflowState) -> WorkflowState:
         }
 
 def query_neo4j(state: WorkflowState) -> WorkflowState:
-    """ Node 5: Truy vấn Neo4j để tìm thực phẩm phù hợp """
+    """ Node 6: Truy vấn Neo4j để tìm thực phẩm phù hợp """
     try:
         user_data = state.get("user_data", {})
         if not user_data:
@@ -188,8 +226,10 @@ def query_neo4j(state: WorkflowState) -> WorkflowState:
                     "step": "fallback_query_error"
                 }
         else:
-            # Truy vấn Neo4j bình thường
-            neo4j_result = query_neo4j_for_foods(user_data)
+            # Truy vấn Neo4j bình thường với thông tin cảm xúc và phương pháp nấu
+            selected_emotion = state.get("selected_emotion")
+            selected_cooking_methods = state.get("selected_cooking_methods")
+            neo4j_result = query_neo4j_for_foods(user_data, selected_emotion, selected_cooking_methods)
         
         return {
             **state,
@@ -282,7 +322,7 @@ def rerank_foods(state: WorkflowState) -> WorkflowState:
         foods = reranked_result.get("foods", {})
         for condition, food_data in foods.items():
             if isinstance(food_data, dict) and "advanced" in food_data:
-                advanced = food_data["advanced"][:3]
+                advanced = food_data["advanced"][:300]
                 reranked_result["foods"][condition]["advanced"] = advanced
         return {
             **state,
@@ -395,14 +435,14 @@ def generate_final_result(state: WorkflowState) -> WorkflowState:
                 for diets in diet_recommendations.values():
                     all_diets.update(diets)
                 if all_diets:
-                    message_parts.append(f"Chế độ ăn: {', '.join(list(all_diets)[:3])}")
+                    message_parts.append(f"Chế độ ăn: {', '.join(list(all_diets)[:300])}")
             
             if cook_methods:
                 all_methods = set()
                 for methods in cook_methods.values():
                     all_methods.update(methods)
                 if all_methods:
-                    message_parts.append(f"Phương pháp nấu: {', '.join(list(all_methods)[:3])}")
+                    message_parts.append(f"Phương pháp nấu: {', '.join(list(all_methods)[:300])}")
         
         # Kiểm tra nếu đã thử hết fallback mà vẫn không có kết quả
         # if fallback_attempt >= 3 and (not foods or not any(foods.values())):
@@ -454,11 +494,16 @@ def should_continue(state: WorkflowState) -> str:
         if state.get("topic_classification") == "no":
             return "end_rejected"
         return "select_emotion"
+    elif step == "emotion_prompt_generated":
+        # Dừng lại để chờ user chọn cảm xúc
+        return "end_success"
     elif step == "emotion_selected":
-        if state.get("selected_emotion"):
-            return "calculate_bmi"
-        else:
-            return "end_success"
+        return "select_cooking_method"
+    elif step == "cooking_method_prompt_generated":
+        # Dừng lại để chờ user chọn phương pháp nấu
+        return "end_success"
+    elif step == "cooking_method_selected":
+        return "calculate_bmi"
     elif step == "bmi_calculated":
         return "query_neo4j"
     elif step == "neo4j_queried":
@@ -536,6 +581,7 @@ def create_workflow() -> StateGraph:
     workflow.add_node("identify_user", identify_user)
     workflow.add_node("classify_topic", classify_topic)
     workflow.add_node("select_emotion", select_emotion_node_wrapper)
+    workflow.add_node("select_cooking_method", select_cooking_method_node_wrapper)
     workflow.add_node("calculate_bmi", calculate_bmi)
     workflow.add_node("query_neo4j", query_neo4j)
     workflow.add_node("rerank_foods", rerank_foods)
@@ -563,6 +609,15 @@ def create_workflow() -> StateGraph:
     )
     workflow.add_conditional_edges(
         "select_emotion",
+        should_continue,
+        {
+            "select_cooking_method": "select_cooking_method",
+            "end_success": "end_success",
+            "end_with_error": "end_with_error"
+        }
+    )
+    workflow.add_conditional_edges(
+        "select_cooking_method",
         should_continue,
         {
             "calculate_bmi": "calculate_bmi",
@@ -613,7 +668,7 @@ def create_workflow() -> StateGraph:
 # Tạo workflow instance
 workflow_graph = create_workflow().compile()
 
-def run_langgraph_workflow_until_emotion(user_id: str, question: str) -> dict:
+def run_langgraph_workflow_until_selection(user_id: str, question: str) -> dict:
     try:
         initial_state = {
             "user_id": user_id,
@@ -628,12 +683,15 @@ def run_langgraph_workflow_until_emotion(user_id: str, question: str) -> dict:
             "error": "",
             "step": "start",
             "emotion_prompt": None,
-            "selected_emotion": None
+            "selected_emotion": None,
+
+            "cooking_method_prompt": None,
+            "selected_cooking_methods": None
         }
         result = workflow_graph.invoke(initial_state)
 
         # Nếu workflow dừng lại để hỏi cảm xúc
-        if result.get("step") == "emotion_selected" and result.get("emotion_prompt"):
+        if result.get("step") == "emotion_prompt_generated" and result.get("emotion_prompt"):
             try:
                 session_id = save_state_to_redis(result)
                 return {
@@ -642,7 +700,21 @@ def run_langgraph_workflow_until_emotion(user_id: str, question: str) -> dict:
                     "session_id": session_id
                 }
             except Exception as e:
-                # Log a more specific error
+                print(f"Error saving session state: {str(e)}")
+                raise HTTPException(status_code=500, detail="Lỗi lưu trạng thái workflow")
+
+
+
+        # Nếu workflow dừng lại để hỏi phương pháp nấu
+        if result.get("step") == "cooking_method_prompt_generated" and result.get("cooking_method_prompt"):
+            try:
+                session_id = save_state_to_redis(result)
+                return {
+                    "status": "need_cooking_method",
+                    "cooking_method_prompt": result["cooking_method_prompt"],
+                    "session_id": session_id
+                }
+            except Exception as e:
                 print(f"Error saving session state: {str(e)}")
                 raise HTTPException(status_code=500, detail="Lỗi lưu trạng thái workflow")
 
@@ -652,14 +724,47 @@ def run_langgraph_workflow_until_emotion(user_id: str, question: str) -> dict:
             "message": "Không có kết quả hoặc workflow kết thúc bất thường"
         })
     except Exception as e:
-        print(f"Error in run_langgraph_workflow_until_emotion: {str(e)}")
+        print(f"Error in run_langgraph_workflow_until_selection: {str(e)}")
         raise HTTPException(status_code=500, detail=f"Lỗi chạy workflow: {str(e)}")
 
 def continue_workflow_with_emotion(session_id: str, emotion: str) -> dict:
     state = load_state_from_redis(session_id)
     state["selected_emotion"] = emotion
+    # Reset step để workflow tiếp tục từ select_emotion
+    state["step"] = "emotion_selected"
 
     result = workflow_graph.invoke(state)
+    
+    # Kiểm tra xem workflow có dừng lại để hỏi phương pháp nấu không
+    if result.get("step") == "cooking_method_prompt_generated" and result.get("cooking_method_prompt"):
+        try:
+            session_id = save_state_to_redis(result)
+            return {
+                "status": "need_cooking_method",
+                "cooking_method_prompt": result["cooking_method_prompt"],
+                "session_id": session_id
+            }
+        except Exception as e:
+            print(f"Error saving session state: {str(e)}")
+            raise HTTPException(status_code=500, detail="Lỗi lưu trạng thái workflow")
+    
+    # Nếu không dừng lại, trả về kết quả cuối cùng
+    return result.get("final_result", {
+        "status": "error",
+        "message": "Không có kết quả"
+    })
+
+
+
+def continue_workflow_with_cooking_method(session_id: str, cooking_methods: List[str]) -> dict:
+    state = load_state_from_redis(session_id)
+    state["selected_cooking_methods"] = cooking_methods
+    # Reset step để workflow tiếp tục từ select_cooking_method
+    state["step"] = "cooking_method_selected"
+
+    result = workflow_graph.invoke(state)
+    
+    # Sau khi chọn phương pháp nấu, workflow sẽ tiếp tục đến kết quả cuối cùng
     return result.get("final_result", {
         "status": "error",
         "message": "Không có kết quả"

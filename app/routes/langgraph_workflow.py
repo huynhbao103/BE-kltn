@@ -1,14 +1,27 @@
 from fastapi import APIRouter, HTTPException, Depends, Header
 from pydantic import BaseModel
-from typing import Optional
+from typing import Optional, List
 import jwt
-from app.graph.engine import run_langgraph_workflow
+from app.graph.engine import run_langgraph_workflow_until_selection, continue_workflow_with_emotion, continue_workflow_with_cooking_method
 from app.config import JWT_SECRET_KEY
 
 router = APIRouter()
 
 class WorkflowInput(BaseModel):
     question: str  # Chỉ cần question, user_id sẽ lấy từ token
+
+class EmotionInput(BaseModel):
+    session_id: str
+    emotion: str
+
+class CookingMethodInput(BaseModel):
+    session_id: str
+    cooking_methods: List[str]
+
+class EmotionAndCookingInput(BaseModel):
+    session_id: str
+    emotion: str
+    cooking_methods: List[str]
 
 def get_user_id_from_token(authorization: Optional[str] = Header(None)) -> str:
     """
@@ -67,8 +80,9 @@ def process_with_langgraph(
     Xử lý câu hỏi sử dụng LangGraph workflow:
     1. Xác định user từ JWT token
     2. Phân loại chủ đề câu hỏi
-    3. Tính BMI/BMR nếu cần
-    4. Trả về kết quả hoàn chỉnh
+    3. Yêu cầu chọn cảm xúc/chế độ ăn/phương pháp nấu
+    4. Tính BMI/BMR nếu cần
+    5. Trả về kết quả hoàn chỉnh
     
     Headers:
     - Authorization: Bearer <JWT_TOKEN>
@@ -77,16 +91,53 @@ def process_with_langgraph(
     - question: Câu hỏi cần xử lý
     """
     try:
-        # Chạy LangGraph workflow với user_id từ token
-        result = run_langgraph_workflow(user_id, data.question)
-        
+        result = run_langgraph_workflow_until_selection(user_id, data.question)
         return result
-        
     except Exception as e:
         raise HTTPException(
             status_code=500, 
             detail=f"Lỗi xử lý workflow: {str(e)}"
         )
+
+@router.post("/process-emotion-cooking")
+def process_emotion_and_cooking(
+    data: EmotionAndCookingInput,
+    user_id: str = Depends(get_user_id_from_token)
+):
+    """
+    Nhận cảm xúc và phương pháp chế biến cùng lúc, trả về kết quả cuối cùng.
+    """
+    try:
+        # Lấy state từ session
+        from app.utils.session_store import load_state_from_redis
+        from app.graph.engine import workflow_graph
+        state = load_state_from_redis(data.session_id)
+        state["selected_emotion"] = data.emotion
+        state["selected_cooking_methods"] = data.cooking_methods
+        # Đặt step để workflow tiếp tục từ sau khi đã chọn cả hai
+        state["step"] = "cooking_method_selected"
+        result = workflow_graph.invoke(state)
+        return result.get("final_result", {
+            "status": "error",
+            "message": "Không có kết quả"
+        })
+    except Exception as e:
+        error_message = str(e)
+        if "Session expired or not found" in error_message:
+            raise HTTPException(
+                status_code=400,
+                detail="Session không tồn tại hoặc đã hết hạn. Vui lòng bắt đầu lại từ đầu."
+            )
+        elif "Session expired" in error_message:
+            raise HTTPException(
+                status_code=400,
+                detail="Session đã hết hạn. Vui lòng bắt đầu lại từ đầu."
+            )
+        else:
+            raise HTTPException(
+                status_code=500, 
+                detail=f"Lỗi xử lý workflow: {error_message}"
+            )
 
 @router.get("/workflow-info")
 def get_workflow_info():
@@ -106,8 +157,24 @@ def get_workflow_info():
                 "description": "Phân loại chủ đề câu hỏi sử dụng OpenAI GPT-4"
             },
             {
+                "name": "select_emotion",
+                "description": "Yêu cầu người dùng chọn cảm xúc hiện tại"
+            },
+            {
+                "name": "select_cooking_method",
+                "description": "Yêu cầu người dùng chọn phương pháp nấu"
+            },
+            {
                 "name": "calculate_bmi",
                 "description": "Tính BMI, BMR và nhu cầu calo cho user"
+            },
+            {
+                "name": "query_neo4j",
+                "description": "Truy vấn Neo4j để tìm thực phẩm phù hợp"
+            },
+            {
+                "name": "rerank_foods",
+                "description": "Sắp xếp lại thực phẩm theo mức độ phù hợp"
             },
             {
                 "name": "generate_result",
@@ -115,7 +182,7 @@ def get_workflow_info():
             }
         ],
         "flow": [
-            "identify_user → classify_topic → calculate_bmi → generate_result",
+            "identify_user → classify_topic → select_emotion → select_cooking_method → calculate_bmi → query_neo4j → rerank_foods → generate_result",
             "identify_user → classify_topic → end_rejected (nếu không thuộc chủ đề)",
             "Any node → end_with_error (nếu có lỗi)"
         ],
@@ -128,8 +195,40 @@ def get_workflow_info():
             "headers": {
                 "Authorization": "Bearer <JWT_TOKEN>"
             },
-            "body": {
-                "question": "Câu hỏi cần xử lý"
+            "endpoints": {
+                "/process": {
+                    "method": "POST",
+                    "description": "Bắt đầu workflow và có thể yêu cầu chọn cảm xúc/chế độ ăn/phương pháp nấu",
+                    "body": {
+                        "question": "Câu hỏi cần xử lý"
+                    }
+                },
+                "/process-emotion": {
+                    "method": "POST", 
+                    "description": "Tiếp tục workflow sau khi chọn cảm xúc",
+                    "body": {
+                        "session_id": "ID session từ response trước",
+                        "emotion": "Cảm xúc đã chọn"
+                    }
+                },
+
+                "/process-cooking-method": {
+                    "method": "POST",
+                    "description": "Tiếp tục workflow sau khi chọn phương pháp nấu",
+                    "body": {
+                        "session_id": "ID session từ response trước",
+                        "cooking_methods": ["Luộc", "Xào", "Nướng"]
+                    }
+                },
+                "/process-emotion-cooking": {
+                    "method": "POST",
+                    "description": "Nhận cảm xúc và phương pháp chế biến cùng lúc, trả về kết quả cuối cùng",
+                    "body": {
+                        "session_id": "ID session từ response trước",
+                        "emotion": "Cảm xúc đã chọn",
+                        "cooking_methods": ["Luộc", "Xào", "Nướng"]
+                    }
+                }
             },
             "example": {
                 "headers": {

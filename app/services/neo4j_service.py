@@ -74,6 +74,42 @@ class Neo4jService:
             with self.driver.session() as session:
                 result = session.run(query)
                 return [record.data() for record in result]
+    
+    def get_all_foods_for_healthy_person(self, limit: int = None):
+        """Truy vấn tất cả món ăn cho người khỏe mạnh (không có bệnh)"""
+        if limit:
+            query = """
+            MATCH (dish:Dish)
+            OPTIONAL MATCH (dish)-[:ĐƯỢC_DÙNG_TRONG]-(di:Diet)
+            OPTIONAL MATCH (dish)-[:ĐƯỢC_CHẾ_BIẾN_BẰNG]->(cm:CookMethod)
+            RETURN DISTINCT 
+                dish.name AS dish_name,
+                dish.id AS dish_id,
+                dish.description AS description,
+                COALESCE(di.name, 'Không xác định') AS diet_name,
+                COALESCE(cm.name, 'Không xác định') AS cook_method
+            ORDER BY dish.name
+            LIMIT $limit
+            """
+            with self.driver.session() as session:
+                result = session.run(query, limit=limit)
+                return [record.data() for record in result]
+        else:
+            query = """
+            MATCH (dish:Dish)
+            OPTIONAL MATCH (dish)-[:ĐƯỢC_DÙNG_TRONG]-(di:Diet)
+            OPTIONAL MATCH (dish)-[:ĐƯỢC_CHẾ_BIẾN_BẰNG]->(cm:CookMethod)
+            RETURN DISTINCT 
+                dish.name AS dish_name,
+                dish.id AS dish_id,
+                dish.description AS description,
+                COALESCE(di.name, 'Không xác định') AS diet_name,
+                COALESCE(cm.name, 'Không xác định') AS cook_method
+            ORDER BY dish.name
+            """
+            with self.driver.session() as session:
+                result = session.run(query)
+                return [record.data() for record in result]
 
 # Instance toàn cục để import
 neo4j_service = Neo4jService()

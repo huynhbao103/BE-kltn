@@ -2,95 +2,54 @@ from typing import Dict, Any, List
 
 def create_fallback_query(user_context: Dict[str, Any], attempt: int = 1) -> Dict[str, Any]:
     """
-    Tạo query fallback đơn giản hơn khi LLM trả về "no"
+    Tạo các tham số fallback cho truy vấn tổng hợp khi không tìm thấy kết quả.
     
     Args:
-        user_context: Thông tin người dùng
-        attempt: Lần thử thứ mấy (1: bỏ cảm xúc, 2: bỏ cảm xúc + chế độ ăn)
+        user_context: Thông tin người dùng và các bộ lọc đã áp dụng
+        attempt: Lần thử (1: bỏ cảm xúc, 2: bỏ phương pháp nấu)
         
     Returns:
-        Dict chứa query fallback
+        Dict chứa các tham số để gọi lại hàm truy vấn chính.
     """
     try:
-        medical_conditions = user_context.get("medical_conditions", [])
-        bmi_category = user_context.get("bmi_category", "")
-        
-        # Query cơ bản chỉ dựa trên bệnh lý
-        base_query = """
-        MATCH (d:Disease)-[:KHUYẾN_NGHỊ]->(di:Diet)-[:ĐƯỢC_DÙNG_TRONG]->(dish:Dish)
-        WHERE d.name IN $conditions
-        WITH dish, di, d
-        OPTIONAL MATCH (dish)-[:ĐƯỢC_CHẾ_BIẾN_BẰNG]->(cm:CookMethod)
-        RETURN DISTINCT 
-            dish.name as dish_name,
-            dish.description as dish_description,
-            di.name as diet_name,
-            di.description as diet_description,
-            COALESCE(cm.name, 'Không xác định') as cook_method,
-            d.name as disease_name
-        ORDER BY dish.name
-        """
-        
-        # Query fallback level 1: bỏ cảm xúc, giữ chế độ ăn
+        # Lấy các bộ lọc đã áp dụng từ lần thử trước
+        filters = user_context.get("filters", {})
+        conditions = filters.get("medical_conditions", [])
+        emotion = filters.get("emotion")
+        cooking_methods = filters.get("cooking_methods")
+
+        # Fallback level 1: Bỏ cảm xúc
         if attempt == 1:
-            query = base_query
-            params = {"conditions": medical_conditions}
+            emotion = None
+            message = "Thử lại bằng cách bỏ qua bộ lọc cảm xúc."
             
-        # Query fallback level 2: bỏ cảm xúc và chế độ ăn, chỉ giữ bệnh lý
+        # Fallback level 2: Bỏ phương pháp nấu
         elif attempt == 2:
-            query = """
-            MATCH (d:Disease)-[:KHUYẾN_NGHỊ]->(di:Diet)-[:ĐƯỢC_DÙNG_TRONG]->(dish:Dish)
-            WHERE d.name IN $conditions
-            WITH dish, di, d
-            OPTIONAL MATCH (dish)-[:ĐƯỢC_CHẾ_BIẾN_BẰNG]->(cm:CookMethod)
-            RETURN DISTINCT 
-                dish.name as dish_name,
-                dish.description as dish_description,
-                di.name as diet_name,
-                di.description as diet_description,
-                COALESCE(cm.name, 'Không xác định') as cook_method,
-                d.name as disease_name
-            ORDER BY dish.name
-            LIMIT 20
-            """
-            params = {"conditions": medical_conditions}
+            emotion = None
+            cooking_methods = None
+            message = "Thử lại bằng cách bỏ qua cảm xúc và phương pháp nấu."
             
-        # Query fallback level 3: chỉ lấy tất cả món ăn
+        # Fallback level 3: Chỉ giữ lại bệnh (nếu có)
         else:
-            query = """
-            MATCH (dish:Dish)
-            OPTIONAL MATCH (dish)-[:ĐƯỢC_DÙNG_TRONG]-(di:Diet)
-            OPTIONAL MATCH (dish)-[:ĐƯỢC_CHẾ_BIẾN_BẰNG]->(cm:CookMethod)
-            RETURN DISTINCT 
-                dish.name as dish_name,
-                dish.description as dish_description,
-                COALESCE(di.name, 'Không xác định') as diet_name,
-                COALESCE(di.description, '') as diet_description,
-                COALESCE(cm.name, 'Không xác định') as cook_method,
-                'Tất cả món ăn' as disease_name
-            ORDER BY dish.name
-            LIMIT 15
-            """
-            params = {}
-        
+            emotion = None
+            cooking_methods = None
+            # Giữ lại 'conditions'
+            message = "Thử lại chỉ với bộ lọc bệnh lý (nếu có)."
+
         return {
             "status": "success",
-            "query": query,
-            "params": params,
-            "attempt": attempt,
-            "message": f"Đã tạo query fallback level {attempt}",
-            "filters_applied": {
-                "medical_conditions": medical_conditions if attempt < 3 else [],
-                "bmi_category": bmi_category if attempt < 2 else "",
-                "emotion": "" if attempt >= 1 else user_context.get("emotion", "")
+            "message": message,
+            "attempt": attempt + 1,
+            "fallback_filters": {
+                "conditions": conditions,
+                "emotion": emotion,
+                "cooking_methods": cooking_methods
             }
         }
         
     except Exception as e:
         return {
             "status": "error",
-            "message": f"Lỗi tạo query fallback: {str(e)}",
-            "query": "",
-            "params": {},
+            "message": f"Lỗi khi tạo truy vấn fallback: {str(e)}",
             "attempt": attempt
         } 

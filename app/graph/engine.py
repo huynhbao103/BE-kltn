@@ -3,6 +3,7 @@ from typing import Dict, Any, TypedDict, Annotated, Optional, List
 from app.graph.nodes.classify_topic_node import check_mode
 from app.graph.nodes.calculate_bmi_node import calculate_bmi_from_user_id
 from app.graph.nodes.query_neo4j_node import query_neo4j_for_foods
+from app.graph.nodes.aggregate_suitable_foods_node import aggregate_suitable_foods
 # from app.graph.nodes.llm_check_food_suitability_node import check_food_suitability
 from app.graph.nodes.fallback_query_node import create_fallback_query
 from app.services.mongo_service import mongo_service
@@ -21,6 +22,7 @@ class WorkflowState(TypedDict):
     topic_classification: str
     bmi_result: Dict[str, Any]
     neo4j_result: Dict[str, Any]
+    aggregated_result: Dict[str, Any]
     llm_check_result: Optional[Dict[str, Any]]
     reranked_foods: Optional[Dict[str, Any]]
     fallback_attempt: Optional[int]
@@ -240,14 +242,44 @@ def query_neo4j(state: WorkflowState) -> WorkflowState:
             "step": "neo4j_query_error"
         }
 
+def aggregate_foods(state: WorkflowState) -> WorkflowState:
+    """ Node 7: Tổng hợp các món ăn phù hợp """
+    try:
+        # Gọi node tổng hợp
+        aggregate_result = aggregate_suitable_foods(state)
+        
+        # Debug: Kiểm tra kết quả từ aggregate_suitable_foods
+        print(f"DEBUG: aggregate_result keys = {aggregate_result.keys()}")
+        print(f"DEBUG: aggregate_result type = {type(aggregate_result)}")
+        
+        # Lấy aggregated_result từ kết quả
+        aggregated_result = aggregate_result.get("aggregated_result", {})
+        
+        # Debug: Kiểm tra aggregated_result
+        print(f"DEBUG: aggregated_result status = {aggregated_result.get('status')}")
+        print(f"DEBUG: aggregated_result keys = {aggregated_result.keys() if isinstance(aggregated_result, dict) else 'Not a dict'}")
+        
+        return {
+            **state,
+            "aggregated_result": aggregated_result,
+            "step": "foods_aggregated"
+        }
+        
+    except Exception as e:
+        return {
+            **state,
+            "error": f"Lỗi tổng hợp món ăn: {str(e)}",
+            "step": "aggregation_error"
+        }
+
 def generate_final_result(state: WorkflowState) -> WorkflowState:
-    """ Node 7: Tạo kết quả cuối cùng """
+    """ Node 8: Tạo kết quả cuối cùng """
     try:
         user_data = state.get("user_data", {})
         question = state.get("question", "")
         topic_classification = state.get("topic_classification", "")
         bmi_result = state.get("bmi_result", {})
-        neo4j_result = state.get("neo4j_result", {})
+        aggregated_result = state.get("aggregated_result", {})
         selected_emotion = state.get("selected_emotion")
 
         # Tạo message chi tiết với các chỉ số
@@ -256,62 +288,51 @@ def generate_final_result(state: WorkflowState) -> WorkflowState:
         # Lấy thông tin medical_conditions từ user_data
         medical_conditions = user_data.get("medicalConditions", [])
         
-        # Trích xuất danh sách món ăn cuối cùng đã được lọc tổng hợp
+        # Trích xuất danh sách món ăn cuối cùng đã được tổng hợp
         final_foods = []
-        if neo4j_result and neo4j_result.get("status") == "success":
-            foods = neo4j_result.get("foods", {})
-            statistics = neo4j_result.get("statistics", {})
-            # Kiểm tra xem người dùng có bệnh nền hay không (loại trừ trường hợp mặc định "Không có")
-            has_no_medical_conditions = not medical_conditions or (len(medical_conditions) == 1 and medical_conditions[0] == "Không có")
+        if aggregated_result and aggregated_result.get("status") == "success":
+            aggregated_foods = aggregated_result.get("aggregated_foods", [])
+            criteria_used = aggregated_result.get("criteria_used", {})
+            food_counts = aggregated_result.get("food_counts", {})
             selected_cooking_methods = state.get("selected_cooking_methods", [])
  
-            for condition, food_data in foods.items():
-                is_medical_condition = any(med_condition in condition for med_condition in medical_conditions)
-                
-                # Sửa lỗi: xử lý món ăn nếu người dùng không có bệnh, hoặc nếu món ăn khớp với bệnh của người dùng
-                if has_no_medical_conditions or is_medical_condition:
-                    if isinstance(food_data, dict) and "advanced" in food_data:
-                        advanced_foods = food_data.get("advanced", [])
-                        for food in advanced_foods:
-                            # Nếu có chọn phương pháp nấu, chỉ lấy món đúng phương pháp
-                            if selected_cooking_methods:
-                                if food.get("cook_method", "").lower() not in [m.lower() for m in selected_cooking_methods]:
-                                    continue
-                            final_foods.append({
-                                "name": food.get("dish_name", "Unknown"),
-                                "id": food.get("dish_id", ""),
-                                "description": food.get("description", ""),
-                                "category": condition,
-                                "cook_method": food.get("cook_method", ""),
-                                "diet": food.get("diet_name", "")
-                            })
-                    else:
-                        # Dữ liệu cũ
-                        for food in food_data:
-                            if selected_cooking_methods:
-                                if food.get("cook_method", "").lower() not in [m.lower() for m in selected_cooking_methods]:
-                                    continue
-                            final_foods.append({
-                                "name": food.get("dish_name", food.get("name", "Unknown")),
-                                "id": food.get("dish_id", food.get("id", "")),
-                                "description": food.get("description", ""),
-                                "category": condition,
-                                "cook_method": food.get("cook_method", ""),
-                                "diet": food.get("diet_name", "")
-                            })
+            # Debug: Kiểm tra aggregated_foods
+            print(f"DEBUG: aggregated_foods count = {len(aggregated_foods)}")
+            
+            # Xử lý danh sách món ăn đã được tổng hợp
+            # Không cần lọc thêm vì aggregate_suitable_foods_node đã lọc rồi
+            for food in aggregated_foods:
+                final_foods.append({
+                    "name": food.get("dish_name", "Unknown"),
+                    "id": food.get("dish_id", ""),
+                    "description": food.get("description", ""),
+                    "category": "aggregated",
+                    "cook_method": food.get("cook_method", ""),
+                    "diet": food.get("diet_name", ""),
+                    "bmi_category": food.get("bmi_category", "")
+                })
  
-            # Hiển thị số lượng món ăn đã được lọc tổng hợp
+            # Hiển thị số lượng món ăn đã được tổng hợp
             if final_foods:
                 food_names = [food.get("name", "Unknown") for food in final_foods]
-                message_parts.append(f"Danh sách món ăn: {', '.join(food_names)}")
+                message_parts.append(f"Danh sách món ăn phù hợp: {', '.join(food_names)}")
+                
+                # Thêm thông tin về tiêu chí đã sử dụng
+                if criteria_used:
+                    criteria_info = []
+                    if criteria_used.get("bmi"):
+                        criteria_info.append(f"BMI: {criteria_used['bmi']}")
+                    if criteria_used.get("cooking_methods"):
+                        criteria_info.append(f"Cách chế biến: {', '.join(criteria_used['cooking_methods'])}")
+                    if criteria_used.get("diseases"):
+                        criteria_info.append(f"Bệnh: {', '.join(criteria_used['diseases'])}")
+                    
+                    if criteria_info:
+                        message_parts.append(f"Tiêu chí: {' | '.join(criteria_info)}")
             else:
                 message_parts.append("Không có món ăn phù hợp với các tiêu chí của bạn")
-                if statistics:
-                    total_foods = statistics.get("total_foods", 0)
-                    total_diets = statistics.get("total_diets", 0)
-                    total_cook_methods = statistics.get("total_cook_methods", 0)
-                    if total_foods > 0:
-                        message_parts.append(f"Tổng: {total_foods} món, {total_diets} chế độ ăn, {total_cook_methods} phương pháp nấu")
+                if food_counts:
+                    message_parts.append(f"Thống kê: BMI({food_counts.get('bmi_foods', 0)}), Chế biến({food_counts.get('cooking_foods', 0)}), Bệnh({food_counts.get('disease_foods', 0)})")
 
         # Tạo message hoàn chỉnh
         detailed_message = " | ".join(message_parts)
@@ -320,24 +341,12 @@ def generate_final_result(state: WorkflowState) -> WorkflowState:
         print(f"DEBUG: final_foods length = {len(final_foods)}")
         if not final_foods:
             print("DEBUG: final_foods is empty!")
-            print(f"DEBUG: neo4j_result status = {neo4j_result.get('status') if neo4j_result else 'None'}")
+            print(f"DEBUG: aggregated_result status = {aggregated_result.get('status') if aggregated_result else 'None'}")
             
-            if neo4j_result and neo4j_result.get("status") == "success":
-                foods = neo4j_result.get("foods", {})
-                print(f"DEBUG: neo4j foods keys = {list(foods.keys())}")
-                
-                print(f"DEBUG: medical_conditions = {medical_conditions}")
-                
-                for condition, food_data in foods.items():
-                    is_medical_condition = any(med_condition in condition for med_condition in medical_conditions)
-                    print(f"DEBUG: condition '{condition}' is_medical = {is_medical_condition}")
-                    
-                    if isinstance(food_data, dict) and "advanced" in food_data:
-                        advanced_count = len(food_data.get("advanced", []))
-                        print(f"DEBUG: {condition} has {advanced_count} advanced foods")
-                    else:
-                        basic_count = len(food_data) if isinstance(food_data, list) else 0
-                        print(f"DEBUG: {condition} has {basic_count} basic foods")
+            if aggregated_result and aggregated_result.get("status") == "success":
+                print(f"DEBUG: aggregated_foods count = {len(aggregated_result.get('aggregated_foods', []))}")
+                print(f"DEBUG: criteria_used = {aggregated_result.get('criteria_used', {})}")
+                print(f"DEBUG: food_counts = {aggregated_result.get('food_counts', {})}")
         
         # Kết quả cuối cùng chỉ chứa thông tin cần thiết
         final_result = {
@@ -391,6 +400,8 @@ def should_continue(state: WorkflowState) -> str:
     elif step == "bmi_calculated":
         return "query_neo4j"
     elif step == "neo4j_queried":
+        return "aggregate_foods"
+    elif step == "foods_aggregated":
         return "generate_result"
     elif step == "result_generated":
         return "end_success"
@@ -465,6 +476,7 @@ def create_workflow() -> StateGraph:
     workflow.add_node("select_cooking_method", select_cooking_method_node_wrapper)
     workflow.add_node("calculate_bmi", calculate_bmi)
     workflow.add_node("query_neo4j", query_neo4j)
+    workflow.add_node("aggregate_foods", aggregate_foods)
     workflow.add_node("generate_result", generate_final_result)
     workflow.add_node("end_with_error", end_with_error)
     workflow.add_node("end_rejected", end_rejected)
@@ -517,6 +529,14 @@ def create_workflow() -> StateGraph:
         "query_neo4j",
         should_continue,
         {
+            "aggregate_foods": "aggregate_foods",
+            "end_with_error": "end_with_error"
+        }
+    )
+    workflow.add_conditional_edges(
+        "aggregate_foods",
+        should_continue,
+        {
             "generate_result": "generate_result",
             "end_with_error": "end_with_error"
         }
@@ -549,6 +569,7 @@ def run_langgraph_workflow_until_selection(user_id: str, question: str) -> dict:
             "topic_classification": "",
             "bmi_result": {},
             "neo4j_result": {},
+            "aggregated_result": {},
             "reranked_foods": None,
             "fallback_attempt": 0,
             "final_result": {},

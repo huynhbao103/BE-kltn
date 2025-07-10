@@ -1,14 +1,21 @@
-from app.services.neo4j_service import neo4j_service
 from app.services.graph_schema_service import GraphSchemaService
 from typing import Dict, Any, List
 
-def query_neo4j_for_foods(user_data: Dict[str, Any], selected_emotion: str = None, selected_cooking_methods: List[str] = None) -> Dict[str, Any]:
+def query_neo4j_for_foods(state: Dict[str, Any]) -> Dict[str, Any]:
     """
     Truy vấn Neo4j nâng cao để tìm thực phẩm phù hợp
     """
     try:
+        user_data = state.get("user_data", {})
+        selected_emotion = state.get("selected_emotion")
+        selected_cooking_methods = state.get("selected_cooking_methods", [])
+        bmi_result = state.get("bmi_result", {})
+        
         # Lấy danh sách tình trạng bệnh từ user_data
         medical_conditions = user_data.get("medicalConditions", [])
+        
+        # Lấy thông tin BMI
+        bmi_category = bmi_result.get("bmi_category", "") if bmi_result else ""
         
         # Kiểm tra có bệnh thực sự hay không
         real_conditions = []
@@ -21,15 +28,24 @@ def query_neo4j_for_foods(user_data: Dict[str, Any], selected_emotion: str = Non
         has_conditions = len(real_conditions) > 0
         has_emotion = selected_emotion and selected_emotion.strip()
         has_cooking_methods = selected_cooking_methods and len(selected_cooking_methods) > 0
+        has_bmi = bmi_category and bmi_category.strip()
+        
+        # Debug prints
+        print(f"DEBUG: has_conditions = {has_conditions}, real_conditions = {real_conditions}")
+        print(f"DEBUG: has_emotion = {has_emotion}, selected_emotion = '{selected_emotion}'")
+        print(f"DEBUG: has_cooking_methods = {has_cooking_methods}, selected_cooking_methods = {selected_cooking_methods}")
+        print(f"DEBUG: has_bmi = {has_bmi}, bmi_category = '{bmi_category}'")
         
         # Nếu không có tiêu chí nào, trả về món ăn phổ biến
-        if not has_conditions and not has_emotion and not has_cooking_methods:
+        if not has_conditions and not has_emotion and not has_cooking_methods and not has_bmi:
+            print("DEBUG: No criteria found, returning popular foods")
             return query_popular_foods()
 
         all_foods = {}
         conditions_checked = []
         emotions_checked = []
         cooking_methods_checked = []
+        bmi_checked = []
         all_diet_recommendations = {}
         all_cook_methods = {}
         detailed_analysis = {}
@@ -50,7 +66,9 @@ def query_neo4j_for_foods(user_data: Dict[str, Any], selected_emotion: str = Non
         # 2. Truy vấn dựa trên cảm xúc
         if has_emotion:
             try:
+                print(f"DEBUG: Querying foods for emotion: {selected_emotion}")
                 emotion_foods = GraphSchemaService.get_foods_by_emotion(selected_emotion)
+                print(f"DEBUG: Found {len(emotion_foods) if emotion_foods else 0} foods for emotion")
                 if emotion_foods:
                     all_foods[f"emotion_{selected_emotion}"] = {"advanced": emotion_foods, "source": "emotion"}
                     emotions_checked.append(selected_emotion)
@@ -61,48 +79,75 @@ def query_neo4j_for_foods(user_data: Dict[str, Any], selected_emotion: str = Non
         if has_cooking_methods:
             for method in selected_cooking_methods:
                 try:
+                    print(f"DEBUG: Querying foods for cooking method: {method}")
                     method_foods = GraphSchemaService.get_foods_by_cooking_method(method)
+                    print(f"DEBUG: Found {len(method_foods) if method_foods else 0} foods for method {method}")
                     if method_foods:
                         all_foods[f"cooking_{method}"] = {"advanced": method_foods, "source": "cooking_method"}
                         cooking_methods_checked.append(method)
                 except Exception as e:
                     print(f"Lỗi truy vấn cho cooking method '{method}': {str(e)}")
 
-        if not all_foods:
-            return query_popular_foods("Không tìm thấy món ăn phù hợp, đây là các món phổ biến.")
+        # 4. Truy vấn dựa trên BMI
+        if has_bmi:
+            try:
+                print(f"DEBUG: Querying foods for BMI category: {bmi_category}")
+                bmi_foods = GraphSchemaService.get_foods_by_bmi(bmi_category.lower())
+                print(f"DEBUG: Found {len(bmi_foods) if bmi_foods else 0} foods for BMI")
+                if bmi_foods:
+                    all_foods[f"bmi_{bmi_category}"] = {"advanced": bmi_foods, "source": "bmi"}
+                    bmi_checked.append(bmi_category)
+            except Exception as e:
+                print(f"Lỗi truy vấn cho BMI '{bmi_category}': {str(e)}")
 
-        return {
+        print(f"DEBUG: all_foods keys = {list(all_foods.keys())}")
+        print(f"DEBUG: all_foods count = {len(all_foods)}")
+        
+        if not all_foods:
+            print("DEBUG: No foods found, returning all foods as fallback")
+            # Fallback: trả về tất cả món ăn nếu không tìm thấy theo tiêu chí
+            all_foods_result = query_all_foods()
+            return all_foods_result
+
+        result = {
             "status": "success",
             "message": "Tìm thấy món ăn phù hợp.",
             "foods": all_foods,
             "conditions_checked": conditions_checked,
             "emotions_checked": emotions_checked,
             "cooking_methods_checked": cooking_methods_checked,
+            "bmi_checked": bmi_checked,
             "diet_recommendations": all_diet_recommendations,
             "cook_methods": all_cook_methods,
         }
+        
+        print(f"DEBUG: Returning result with {len(all_foods)} food categories")
+        # Trả về chỉ phần thay đổi của state theo quy tắc LangGraph
+        return {"query_result": result}
     except Exception as e:
-        return {"status": "error", "message": str(e)}
+        return {"query_result": {"status": "error", "message": str(e)}}
 
 def query_popular_foods(message="Đây là những món ăn phổ biến."):
     """Truy vấn thực phẩm phổ biến."""
     try:
         popular_foods = GraphSchemaService.get_popular_foods()
-        return {
+        result = {
             "status": "popular_foods",
             "message": message,
             "foods": {"popular": {"advanced": popular_foods, "source": "popular"}},
         }
+        # Trả về đúng format cho LangGraph
+        return {"query_result": result}
     except Exception as e:
-        return {"status": "error", "message": str(e)}
+        return {"query_result": {"status": "error", "message": str(e)}}
 
 def query_all_foods() -> Dict[str, Any]:
     """
     Truy vấn tất cả món ăn khi không có bệnh hoặc thông tin cụ thể
     """
     try:
-        # Truy vấn tất cả món ăn từ Neo4j cho người khỏe mạnh
-        all_foods = neo4j_service.get_all_foods_for_healthy_person()
+        # Truy vấn tất cả món ăn từ GraphSchemaService cho người khỏe mạnh
+        all_foods = GraphSchemaService.get_all_foods_for_healthy_person()
         
         return {
             "status": "all_foods",
@@ -159,65 +204,3 @@ def query_all_foods() -> Dict[str, Any]:
             }
         }
 
-def query_popular_foods() -> Dict[str, Any]:
-    """
-    Truy vấn thực phẩm phổ biến khi không có thông tin cụ thể
-    """
-    try:
-        # Truy vấn thực phẩm phổ biến từ Neo4j (không giới hạn cho test)
-        popular_foods = neo4j_service.get_popular_foods()
-        
-        return {
-            "status": "popular_foods",
-            "message": "Đây là những món ăn phổ biến và tốt cho sức khỏe",
-            "foods": {
-                "popular": {
-                    "basic": [],
-                    "advanced": popular_foods,
-                    "source": "popular",
-                    "description": "Thực phẩm phổ biến và tốt cho sức khỏe"
-                }
-            },
-            "conditions_checked": [],
-            "emotions_checked": [],
-            "cooking_methods_checked": [],
-            "diet_recommendations": {},
-            "cook_methods": {},
-            "detailed_analysis": {
-                "popular": {
-                    "popular_foods": popular_foods,
-                    "food_count": len(popular_foods),
-                    "source": "popular"
-                }
-            },
-            "statistics": {
-                "total_conditions": 0,
-                "total_emotions": 0,
-                "total_cooking_methods": 0,
-                "total_foods": len(popular_foods),
-                "total_diets": 0,
-                "total_cook_methods": 0,
-                "average_foods_per_source": len(popular_foods)
-            }
-        }
-    except Exception as e:
-        return {
-            "status": "error",
-            "message": f"Lỗi truy vấn thực phẩm phổ biến: {str(e)}",
-            "foods": {},
-            "conditions_checked": [],
-            "emotions_checked": [],
-            "cooking_methods_checked": [],
-            "diet_recommendations": {},
-            "cook_methods": {},
-            "detailed_analysis": {},
-            "statistics": {
-                "total_conditions": 0,
-                "total_emotions": 0,
-                "total_cooking_methods": 0,
-                "total_foods": 0,
-                "total_diets": 0,
-                "total_cook_methods": 0,
-                "average_foods_per_source": 0
-            }
-        } 

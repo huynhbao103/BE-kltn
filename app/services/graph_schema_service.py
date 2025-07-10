@@ -253,10 +253,16 @@ class GraphSchemaService:
     @staticmethod
     def get_foods_by_cooking_method(cooking_method: str):
         """Truy vấn thực phẩm theo phương pháp nấu (không phân biệt hoa thường)"""
+        # Thử nhiều relationship types khác nhau
         query = """
         MATCH (cm:CookMethod)
         WHERE toLower(cm.name) = toLower($cooking_method)
-        MATCH (cm)-[:ĐƯỢC_DÙNG_TRONG]->(dish:Dish)
+        OPTIONAL MATCH (cm)-[:ĐƯỢC_DÙNG_TRONG]->(dish1:Dish)
+        OPTIONAL MATCH (cm)-[:ĐƯỢC_CHẾ_BIẾN_BẰNG]->(dish2:Dish)
+        OPTIONAL MATCH (dish3:Dish)-[:ĐƯỢC_CHẾ_BIẾN_BẰNG]->(cm)
+        WITH cm, 
+             COALESCE(dish1, dish2, dish3) AS dish
+        WHERE dish IS NOT NULL
         RETURN DISTINCT 
             dish.name AS dish_name,
             dish.id AS dish_id,
@@ -267,64 +273,7 @@ class GraphSchemaService:
         with driver.session() as session:
             result = session.run(query, cooking_method=cooking_method)
             return [record.data() for record in result]
-    
-    @staticmethod
-    def get_popular_foods(limit: int = None):
-        """Truy vấn thực phẩm phổ biến"""
-        if limit:
-            query = """
-            MATCH (dish:Dish)
-            RETURN DISTINCT 
-                dish.name AS dish_name,
-                dish.id AS dish_id,
-                dish.description AS description
-            ORDER BY dish.name
-            LIMIT $limit
-            """
-            with driver.session() as session:
-                result = session.run(query, limit=limit)
-                return [record.data() for record in result]
-        else:
-            query = """
-            MATCH (dish:Dish)
-            RETURN DISTINCT 
-                dish.name AS dish_name,
-                dish.id AS dish_id,
-                dish.description AS description
-            ORDER BY dish.name
-            """
-            with driver.session() as session:
-                result = session.run(query)
-                return [record.data() for record in result]
-    
-    @staticmethod
-    def get_healthy_foods(limit: int = None):
-        """Truy vấn thực phẩm tốt cho sức khỏe"""
-        if limit:
-            query = """
-            MATCH (dish:Dish)
-            RETURN DISTINCT 
-                dish.name AS dish_name,
-                dish.id AS dish_id,
-                dish.description AS description
-            ORDER BY dish.name
-            LIMIT $limit
-            """
-            with driver.session() as session:
-                result = session.run(query, limit=limit)
-                return [record.data() for record in result]
-        else:
-            query = """
-            MATCH (dish:Dish)
-            RETURN DISTINCT 
-                dish.name AS dish_name,
-                dish.id AS dish_id,
-                dish.description AS description
-            ORDER BY dish.name
-            """
-            with driver.session() as session:
-                result = session.run(query)
-                return [record.data() for record in result]
+
     
     @staticmethod
     def get_all_foods_for_healthy_person(limit: int = None):
@@ -361,4 +310,29 @@ class GraphSchemaService:
             """
             with driver.session() as session:
                 result = session.run(query)
-                return [record.data() for record in result] 
+                return [record.data() for record in result]
+    
+    @staticmethod
+    def run_custom_query(query: str, params: Dict[str, Any] = None):
+        """Chạy query tùy chỉnh với parameters"""
+        if params is None:
+            params = {}
+        with driver.session() as session:
+            result = session.run(query, **params)
+            return [record.data() for record in result]
+    
+    @staticmethod
+    def get_foods_by_bmi(bmi_category: str):
+        """Truy vấn thực phẩm phù hợp với BMI category"""
+        query = """
+        MATCH (dish:Dish)-[:PHÙ_HỢP_VỚI_BMI]->(bmi:BMI {name: $bmi_category})
+        RETURN DISTINCT 
+            dish.name AS dish_name,
+            dish.id AS dish_id,
+            dish.description AS description,
+            bmi.name AS bmi_category
+        ORDER BY dish.name
+        """
+        with driver.session() as session:
+            result = session.run(query, bmi_category=bmi_category)
+            return [record.data() for record in result]

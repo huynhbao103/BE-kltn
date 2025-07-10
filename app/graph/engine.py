@@ -203,12 +203,12 @@ def query_neo4j(state: WorkflowState) -> WorkflowState:
             # Tạo fallback query
             fallback_result = create_fallback_query(user_data, fallback_attempt)
             if fallback_result["status"] == "success":
-                # Sử dụng fallback query
-                from app.services.neo4j_service import neo4j_service
+                # Sử dụng fallback query với GraphSchemaService
+                from app.services.graph_schema_service import GraphSchemaService
                 query = fallback_result["query"]
                 params = fallback_result["params"]
                 
-                result = neo4j_service.run_query(query, params)
+                result = GraphSchemaService.run_custom_query(query, params)
                 neo4j_result = {
                     "status": "success",
                     "data": result,
@@ -222,10 +222,10 @@ def query_neo4j(state: WorkflowState) -> WorkflowState:
                     "step": "fallback_query_error"
                 }
         else:
-            # Truy vấn Neo4j bình thường với thông tin cảm xúc và phương pháp nấu
-            selected_emotion = state.get("selected_emotion")
-            selected_cooking_methods = state.get("selected_cooking_methods")
-            neo4j_result = query_neo4j_for_foods(user_data, selected_emotion, selected_cooking_methods)
+            # Truy vấn Neo4j bình thường với state đầy đủ
+            query_result = query_neo4j_for_foods(state)
+            # Lấy kết quả từ query_result vì hàm trả về {"query_result": result}
+            neo4j_result = query_result.get("query_result", query_result)
         
         return {
             **state,
@@ -253,12 +253,14 @@ def generate_final_result(state: WorkflowState) -> WorkflowState:
         # Tạo message chi tiết với các chỉ số
         message_parts = []
         
+        # Lấy thông tin medical_conditions từ user_data
+        medical_conditions = user_data.get("medicalConditions", [])
+        
         # Trích xuất danh sách món ăn cuối cùng đã được lọc tổng hợp
         final_foods = []
         if neo4j_result and neo4j_result.get("status") == "success":
             foods = neo4j_result.get("foods", {})
             statistics = neo4j_result.get("statistics", {})
-            medical_conditions = user_data.get("medicalConditions", [])
             # Kiểm tra xem người dùng có bệnh nền hay không (loại trừ trường hợp mặc định "Không có")
             has_no_medical_conditions = not medical_conditions or (len(medical_conditions) == 1 and medical_conditions[0] == "Không có")
             selected_cooking_methods = state.get("selected_cooking_methods", [])
@@ -324,7 +326,6 @@ def generate_final_result(state: WorkflowState) -> WorkflowState:
                 foods = neo4j_result.get("foods", {})
                 print(f"DEBUG: neo4j foods keys = {list(foods.keys())}")
                 
-                medical_conditions = user_data.get("medicalConditions", [])
                 print(f"DEBUG: medical_conditions = {medical_conditions}")
                 
                 for condition, food_data in foods.items():

@@ -4,6 +4,7 @@ from app.graph.nodes.classify_topic_node import check_mode
 from app.graph.nodes.calculate_bmi_node import calculate_bmi_from_user_id
 from app.graph.nodes.query_neo4j_node import query_neo4j_for_foods
 from app.graph.nodes.aggregate_suitable_foods_node import aggregate_suitable_foods
+from app.graph.nodes.rerank_foods_node import rerank_foods
 # from app.graph.nodes.llm_check_food_suitability_node import check_food_suitability
 from app.graph.nodes.fallback_query_node import create_fallback_query
 from app.services.mongo_service import mongo_service
@@ -23,6 +24,7 @@ class WorkflowState(TypedDict):
     bmi_result: Dict[str, Any]
     neo4j_result: Dict[str, Any]
     aggregated_result: Dict[str, Any]
+    rerank_result: Optional[Dict[str, Any]]
     llm_check_result: Optional[Dict[str, Any]]
     reranked_foods: Optional[Dict[str, Any]]
     fallback_attempt: Optional[int]
@@ -272,14 +274,45 @@ def aggregate_foods(state: WorkflowState) -> WorkflowState:
             "step": "aggregation_error"
         }
 
+def rerank_foods_wrapper(state: WorkflowState) -> WorkflowState:
+    """ Node 8: Rerank các món ăn sử dụng LLM """
+    try:
+        # Gọi node rerank
+        rerank_result = rerank_foods(state)
+        
+        # Debug: Kiểm tra kết quả từ rerank_foods
+        print(f"DEBUG: rerank_result keys = {rerank_result.keys()}")
+        
+        # Lấy rerank_result từ kết quả
+        reranked_result = rerank_result.get("rerank_result", {})
+        
+        # Debug: Kiểm tra reranked_result
+        print(f"DEBUG: reranked_result status = {reranked_result.get('status')}")
+        print(f"DEBUG: reranked_result total_count = {reranked_result.get('total_count', 0)}")
+        
+        return {
+            **state,
+            "rerank_result": reranked_result,
+            "step": "foods_reranked"
+        }
+        
+    except Exception as e:
+        return {
+            **state,
+            "error": f"Lỗi rerank món ăn: {str(e)}",
+            "step": "rerank_error"
+        }
+
+
+
 def generate_final_result(state: WorkflowState) -> WorkflowState:
-    """ Node 8: Tạo kết quả cuối cùng """
+    """ Node 9: Tạo kết quả cuối cùng """
     try:
         user_data = state.get("user_data", {})
         question = state.get("question", "")
         topic_classification = state.get("topic_classification", "")
         bmi_result = state.get("bmi_result", {})
-        aggregated_result = state.get("aggregated_result", {})
+        rerank_result = state.get("rerank_result", {})
         selected_emotion = state.get("selected_emotion")
 
         # Tạo message chi tiết với các chỉ số
@@ -288,51 +321,62 @@ def generate_final_result(state: WorkflowState) -> WorkflowState:
         # Lấy thông tin medical_conditions từ user_data
         medical_conditions = user_data.get("medicalConditions", [])
         
-        # Trích xuất danh sách món ăn cuối cùng đã được tổng hợp
+        # Trích xuất danh sách món ăn đã được rerank
         final_foods = []
-        if aggregated_result and aggregated_result.get("status") == "success":
-            aggregated_foods = aggregated_result.get("aggregated_foods", [])
-            criteria_used = aggregated_result.get("criteria_used", {})
-            food_counts = aggregated_result.get("food_counts", {})
+        if rerank_result and rerank_result.get("status") == "success":
+            ranked_foods = rerank_result.get("ranked_foods", [])
+            rerank_criteria = rerank_result.get("rerank_criteria", {})
+            total_count = rerank_result.get("total_count", 0)
             selected_cooking_methods = state.get("selected_cooking_methods", [])
  
-            # Debug: Kiểm tra aggregated_foods
-            print(f"DEBUG: aggregated_foods count = {len(aggregated_foods)}")
+            # Debug: Kiểm tra ranked_foods
+            print(f"DEBUG: ranked_foods count = {len(ranked_foods)}")
+            print(f"DEBUG: total_count = {total_count}")
             
-            # Xử lý danh sách món ăn đã được tổng hợp
-            # Không cần lọc thêm vì aggregate_suitable_foods_node đã lọc rồi
-            for food in aggregated_foods:
+            # Xử lý danh sách món ăn đã được rerank
+            for food in ranked_foods:
                 final_foods.append({
                     "name": food.get("dish_name", "Unknown"),
                     "id": food.get("dish_id", ""),
                     "description": food.get("description", ""),
-                    "category": "aggregated",
+                    "category": "ranked",
                     "cook_method": food.get("cook_method", ""),
                     "diet": food.get("diet_name", ""),
-                    "bmi_category": food.get("bmi_category", "")
+                    "bmi_category": food.get("bmi_category", ""),
+                    "calories": food.get("calories", 0),
+                    "protein": food.get("protein", 0),
+                    "fat": food.get("fat", 0),
+                    "carbs": food.get("carbs", 0)
                 })
  
-            # Hiển thị số lượng món ăn đã được tổng hợp
+            # Hiển thị số lượng món ăn đã được rerank
             if final_foods:
-                food_names = [food.get("name", "Unknown") for food in final_foods]
+                # Chỉ hiển thị 5 món đầu tiên trong message
+                food_names = [food.get("name", "Unknown") for food in final_foods[:5]]
+                if len(final_foods) > 5:
+                    # food_names.append(f"... và {len(final_foods) - 5} món khác")
+                    food_names = [food.get("name", "Unknown") for food in final_foods]
                 message_parts.append(f"Danh sách món ăn phù hợp: {', '.join(food_names)}")
                 
-                # Thêm thông tin về tiêu chí đã sử dụng
-                if criteria_used:
-                    criteria_info = []
-                    if criteria_used.get("bmi"):
-                        criteria_info.append(f"BMI: {criteria_used['bmi']}")
-                    if criteria_used.get("cooking_methods"):
-                        criteria_info.append(f"Cách chế biến: {', '.join(criteria_used['cooking_methods'])}")
-                    if criteria_used.get("diseases"):
-                        criteria_info.append(f"Bệnh: {', '.join(criteria_used['diseases'])}")
+                # # Thêm thông tin về tiêu chí đã sử dụng
+                # if rerank_criteria:
+                #     criteria_info = []
+                #     if rerank_criteria.get("bmi_category"):
+                #         criteria_info.append(f"BMI: {rerank_criteria['bmi_category']}")
+                #     if rerank_criteria.get("cooking_methods"):
+                #         criteria_info.append(f"Cách chế biến: {', '.join(rerank_criteria['cooking_methods'])}")
+                #     if rerank_criteria.get("medical_conditions"):
+                #         criteria_info.append(f"Bệnh: {', '.join(rerank_criteria['medical_conditions'])}")
+                #     if rerank_criteria.get("emotion"):
+                #         criteria_info.append(f"Cảm xúc: {rerank_criteria['emotion']}")
                     
-                    if criteria_info:
-                        message_parts.append(f"Tiêu chí: {' | '.join(criteria_info)}")
+                #     if criteria_info:
+                #         message_parts.append(f"Tiêu chí: {' | '.join(criteria_info)}")
+                
+                # # Thêm thông tin tổng số món
+                message_parts.append(f"Tổng cộng: {total_count} món ăn")
             else:
                 message_parts.append("Không có món ăn phù hợp với các tiêu chí của bạn")
-                if food_counts:
-                    message_parts.append(f"Thống kê: BMI({food_counts.get('bmi_foods', 0)}), Chế biến({food_counts.get('cooking_foods', 0)}), Bệnh({food_counts.get('disease_foods', 0)})")
 
         # Tạo message hoàn chỉnh
         detailed_message = " | ".join(message_parts)
@@ -341,18 +385,19 @@ def generate_final_result(state: WorkflowState) -> WorkflowState:
         print(f"DEBUG: final_foods length = {len(final_foods)}")
         if not final_foods:
             print("DEBUG: final_foods is empty!")
-            print(f"DEBUG: aggregated_result status = {aggregated_result.get('status') if aggregated_result else 'None'}")
+            print(f"DEBUG: rerank_result status = {rerank_result.get('status') if rerank_result else 'None'}")
             
-            if aggregated_result and aggregated_result.get("status") == "success":
-                print(f"DEBUG: aggregated_foods count = {len(aggregated_result.get('aggregated_foods', []))}")
-                print(f"DEBUG: criteria_used = {aggregated_result.get('criteria_used', {})}")
-                print(f"DEBUG: food_counts = {aggregated_result.get('food_counts', {})}")
+            if rerank_result and rerank_result.get("status") == "success":
+                print(f"DEBUG: ranked_foods count = {len(rerank_result.get('ranked_foods', []))}")
+                print(f"DEBUG: rerank_criteria = {rerank_result.get('rerank_criteria', {})}")
+                print(f"DEBUG: total_count = {rerank_result.get('total_count', 0)}")
         
         # Kết quả cuối cùng chỉ chứa thông tin cần thiết
         final_result = {
             "status": "success",
             "message": detailed_message,
             "foods": final_foods,
+            "total_count": len(final_foods),
             "user_info": {
                 "name": user_data.get("name", "Unknown"),
                 "age": user_data.get("age", "N/A"),
@@ -362,6 +407,7 @@ def generate_final_result(state: WorkflowState) -> WorkflowState:
             },
             "selected_emotion": selected_emotion,
             "selected_cooking_methods": state.get("selected_cooking_methods", []),
+            "rerank_criteria": rerank_result.get("rerank_criteria", {}) if rerank_result else {},
             "timestamp": datetime.now().isoformat()
         }
         
@@ -402,6 +448,8 @@ def should_continue(state: WorkflowState) -> str:
     elif step == "neo4j_queried":
         return "aggregate_foods"
     elif step == "foods_aggregated":
+        return "rerank_foods"
+    elif step == "foods_reranked":
         return "generate_result"
     elif step == "result_generated":
         return "end_success"
@@ -477,6 +525,7 @@ def create_workflow() -> StateGraph:
     workflow.add_node("calculate_bmi", calculate_bmi)
     workflow.add_node("query_neo4j", query_neo4j)
     workflow.add_node("aggregate_foods", aggregate_foods)
+    workflow.add_node("rerank_foods", rerank_foods_wrapper)
     workflow.add_node("generate_result", generate_final_result)
     workflow.add_node("end_with_error", end_with_error)
     workflow.add_node("end_rejected", end_rejected)
@@ -535,6 +584,14 @@ def create_workflow() -> StateGraph:
     )
     workflow.add_conditional_edges(
         "aggregate_foods",
+        should_continue,
+        {
+            "rerank_foods": "rerank_foods",
+            "end_with_error": "end_with_error"
+        }
+    )
+    workflow.add_conditional_edges(
+        "rerank_foods",
         should_continue,
         {
             "generate_result": "generate_result",

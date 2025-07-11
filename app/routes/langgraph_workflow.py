@@ -23,6 +23,8 @@ class EmotionAndCookingInput(BaseModel):
     emotion: str
     cooking_methods: List[str]
 
+
+
 def get_user_id_from_token(authorization: Optional[str] = Header(None)) -> str:
     """
     Lấy user_id từ JWT token trong Authorization header
@@ -139,6 +141,10 @@ def process_emotion_and_cooking(
                 detail=f"Lỗi xử lý workflow: {error_message}"
             )
 
+
+
+
+
 @router.get("/workflow-info")
 def get_workflow_info():
     """
@@ -157,6 +163,10 @@ def get_workflow_info():
                 "description": "Phân loại chủ đề câu hỏi sử dụng OpenAI GPT-4"
             },
             {
+                "name": "classify_intent",
+                "description": "Phân tích intent của người dùng dựa trên session hiện có"
+            },
+            {
                 "name": "select_emotion",
                 "description": "Yêu cầu người dùng chọn cảm xúc hiện tại"
             },
@@ -173,6 +183,10 @@ def get_workflow_info():
                 "description": "Truy vấn Neo4j để tìm thực phẩm phù hợp"
             },
             {
+                "name": "aggregate_foods",
+                "description": "Tổng hợp các món ăn phù hợp theo tiêu chí"
+            },
+            {
                 "name": "rerank_foods",
                 "description": "Sắp xếp lại thực phẩm theo mức độ phù hợp"
             },
@@ -182,8 +196,11 @@ def get_workflow_info():
             }
         ],
         "flow": [
-            "identify_user → classify_topic → select_emotion → select_cooking_method → calculate_bmi → query_neo4j → rerank_foods → generate_result",
+            "identify_user → classify_topic → classify_intent → select_emotion/select_cooking_method/calculate_bmi → ... → generate_result",
             "identify_user → classify_topic → end_rejected (nếu không thuộc chủ đề)",
+            "classify_intent → select_emotion (nếu muốn thay đổi cảm xúc)",
+            "classify_intent → select_cooking_method (nếu muốn thay đổi cách chế biến)",
+            "classify_intent → calculate_bmi (nếu tiếp tục với lựa chọn hiện tại)",
             "Any node → end_with_error (nếu có lỗi)"
         ],
         "authentication": {
@@ -227,6 +244,22 @@ def get_workflow_info():
                         "session_id": "ID session từ response trước",
                         "emotion": "Cảm xúc đã chọn",
                         "cooking_methods": ["Luộc", "Xào", "Nướng"]
+                    }
+                },
+                "/classify-intent": {
+                    "method": "POST",
+                    "description": "Phân tích intent của người dùng dựa trên session hiện có",
+                    "body": {
+                        "session_id": "ID session từ response trước",
+                        "question": "Câu hỏi mới của người dùng"
+                    },
+                    "response": {
+                        "intent": "continue/change_emotion/change_cooking/change_both/restart",
+                        "confidence": "high/medium/low",
+                        "reasoning": "Lý do phân tích",
+                        "suggested_emotion": "Cảm xúc đề xuất (nếu có)",
+                        "suggested_cooking_methods": ["Cách chế biến đề xuất (nếu có)"],
+                        "next_action": "Hành động tiếp theo"
                     }
                 }
             },

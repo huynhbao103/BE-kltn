@@ -38,6 +38,9 @@ class WorkflowState(TypedDict):
 
 def identify_user(state: WorkflowState) -> WorkflowState:
     """Node 1: Xác định user từ user_id """
+    print(f"DEBUG: identify_user - Starting with user_id: {state.get('user_id')}")
+    print(f"DEBUG: identify_user - Question: {state.get('question')}")
+    print(f"DEBUG: identify_user - Current step: {state.get('step')}")
     try:
         # Lấy user_id từ state (được truyền từ API)
         user_id = state.get("user_id")
@@ -81,6 +84,8 @@ def identify_user(state: WorkflowState) -> WorkflowState:
 
 def classify_topic(state: WorkflowState) -> WorkflowState:
     """Node 2: Phân loại chủ đề câu hỏi"""
+    print(f"DEBUG: classify_topic - Starting with question: {state.get('question')}")
+    print(f"DEBUG: classify_topic - User data: {state.get('user_data', {}).get('name', 'Unknown')}")
     try:
         question = state.get("question", "")
         if not question:
@@ -276,6 +281,11 @@ def aggregate_foods(state: WorkflowState) -> WorkflowState:
 
 def rerank_foods_wrapper(state: WorkflowState) -> WorkflowState:
     """ Node 8: Rerank các món ăn sử dụng LLM """
+    print(f"DEBUG: rerank_foods_wrapper - Starting with question: {state.get('question')}")
+    print(f"DEBUG: rerank_foods_wrapper - User data: {state.get('user_data', {}).get('name', 'Unknown')}")
+    print(f"DEBUG: rerank_foods_wrapper - Selected emotion: {state.get('selected_emotion')}")
+    print(f"DEBUG: rerank_foods_wrapper - Selected cooking methods: {state.get('selected_cooking_methods')}")
+    print(f"DEBUG: rerank_foods_wrapper - Aggregated foods count: {len(state.get('aggregated_result', {}).get('aggregated_foods', []))}")
     try:
         # Gọi node rerank
         rerank_result = rerank_foods(state)

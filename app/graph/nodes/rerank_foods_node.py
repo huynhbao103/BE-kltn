@@ -1,7 +1,9 @@
+import os
+from dotenv import load_dotenv
+from openai import OpenAI
 from typing import Dict, Any, List
-from app.utils.prompt_templates import get_rerank_foods_prompt
-from app.services.llm.llm_service import LLMService
-
+load_dotenv()
+client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
 def rerank_foods(state: Dict[str, Any]) -> Dict[str, Any]:
     """
     Node rerank các món ăn sử dụng LLM theo thứ tự phù hợp nhất
@@ -12,6 +14,7 @@ def rerank_foods(state: Dict[str, Any]) -> Dict[str, Any]:
         selected_emotion = state.get("selected_emotion")
         selected_cooking_methods = state.get("selected_cooking_methods", [])
         aggregated_result = state.get("aggregated_result", {})
+        user_question = state.get("question", "")
         
         # Lấy danh sách món ăn đã được tổng hợp
         if not aggregated_result or aggregated_result.get("status") != "success":
@@ -43,46 +46,112 @@ def rerank_foods(state: Dict[str, Any]) -> Dict[str, Any]:
             food_info = {
                 "id": food.get("dish_id", ""),
                 "name": food.get("dish_name", "Unknown"),
-                "description": food.get("description", ""),
                 "cook_method": food.get("cook_method", ""),
-                "diet": food.get("diet_name", ""),
-                "bmi_category": food.get("bmi_category", ""),
-                "calories": food.get("calories", 0),
-                "protein": food.get("protein", 0),
-                "fat": food.get("fat", 0),
-                "carbs": food.get("carbs", 0)
+                "diet": food.get("diet_name", "")
             }
             foods_data.append(food_info)
         
-        # Tạo prompt cho LLM
-        prompt_data = {
-            "user_name": user_name,
-            "user_age": user_age,
-            "bmi_category": bmi_category,
-            "medical_conditions": real_conditions,
-            "selected_emotion": selected_emotion,
-            "selected_cooking_methods": selected_cooking_methods,
-            "foods": foods_data
-        }
+        # Tạo danh sách món ăn cho prompt
+        foods_list = ""
+        for i, food in enumerate(foods_data, 1):
+            foods_list += f"{i}. {food['name']}\n"
+            if food.get('cook_method'):
+                foods_list += f"   - Cách chế biến: {food['cook_method']}\n"
+            if food.get('diet'):
+                foods_list += f"   - Chế độ ăn: {food['diet']}\n"
+            foods_list += "\n"
         
-        prompt = get_rerank_foods_prompt(prompt_data)
+        # Tạo thông tin bệnh
+        conditions_text = "không có bệnh đặc biệt"
+        if real_conditions:
+            conditions_text = ", ".join(real_conditions)
+        
+        # Tạo thông tin cách chế biến
+        cooking_text = "không yêu cầu cụ thể"
+        if selected_cooking_methods:
+            cooking_text = ", ".join(selected_cooking_methods)
+        
+        # Tạo prompt mới, rõ ràng và ổn định hơn
+        prompt = f"""Bạn là một chuyên gia dinh dưỡng và ẩm thực hàng đầu. Nhiệm vụ của bạn là giúp người dùng chọn món ăn phù hợp nhất từ một danh sách cho trước.
+
+**Thông tin người dùng:**
+- Tên: {user_name}
+- Câu hỏi: "{user_question}"
+- Phân loại BMI: {bmi_category}
+- Tình trạng bệnh: {conditions_text}
+- Cảm xúc hiện tại: {selected_emotion}
+- Cách chế biến ưa thích: {cooking_text}
+
+**Danh sách món ăn cần xử lý:**
+{foods_list}
+
+**YÊU CẦU:**
+
+**Bước 1: Xác định quy tắc lọc món ăn từ câu hỏi của người dùng.**
+- **QUAN TRỌNG:** Nếu câu hỏi KHÔNG chứa bất kỳ từ khóa nào về loại món ăn (như "chay", "mặn", "tráng miệng", "đồ ăn vặt", v.v.), bạn phải **GIỮ LẠI TOÀN BỘ DANH SÁCH MÓN ĂN** và chuyển thẳng đến Bước 3 để rerank.
+- Nếu câu hỏi yêu cầu **"món chay"**:
+  - Quy tắc là **CHỈ GIỮ LẠI MÓN CHAY**.
+  - Bạn PHẢI loại bỏ TẤT CẢ các món có chứa thịt, cá, hải sản, trứng và các sản phẩm từ động vật.
+- Nếu câu hỏi yêu cầu một loại cụ thể khác (ví dụ: "tráng miệng", "món chính", "khai vị", "soup", "salad"):
+  - Quy tắc là **CHỈ GIỮ LẠI CÁC MÓN THUỘC LOẠI ĐÓ**.
+  - Bạn cần tự suy luận dựa vào tên món ăn để phân loại.
+
+**Bước 2: Áp dụng quy tắc lọc (NẾU CÓ).**
+- Dựa vào quy tắc ở Bước 1, tạo ra một danh sách món ăn đã được lọc.
+- Nếu không có quy tắc lọc, danh sách này chính là danh sách món ăn ban đầu.
+
+**Bước 3: Sắp xếp (Rerank) danh sách món ăn đã lọc.**
+- Sắp xếp các món ăn trong danh sách đã lọc theo thứ tự phù hợp nhất với người dùng, dựa trên các tiêu chí sau (ưu tiên từ trên xuống dưới):
+  1.  **Sự phù hợp với yêu cầu trong câu hỏi** (nếu có yêu cầu đặc biệt khác ngoài loại món ăn).
+  2.  **Sức khỏe:** Phù hợp với tình trạng bệnh ({conditions_text}) và BMI ({bmi_category}).
+  3.  **Sở thích:** Phù hợp với cách chế biến ưa thích ({cooking_text}).
+  4.  **Cảm xúc:** Phù hợp với cảm xúc hiện tại ({selected_emotion}).
+  5.  Mức độ phổ biến và cân bằng dinh dưỡng.
+- **Loại bỏ** những món không thực sự phù hợp với các tiêu chí trên.
+
+**Bước 4: Trả về kết quả.**
+- Trả về **CHỈ danh sách TÊN các món ăn** đã được lọc và sắp xếp.
+- Mỗi món ăn trên một dòng. Không thêm số thứ tự, giải thích hay bất kỳ thông tin nào khác.
+"""
         
         print(f"DEBUG: Sending rerank request to LLM for {len(foods_data)} foods")
+        print(f"DEBUG: User question: {user_question}")
+        print(f"DEBUG: Prompt length: {len(prompt)} characters")
         
         # Gọi LLM để rerank
         try:
-            llm_response = LLMService.get_completion(prompt)
-            print(f"DEBUG: LLM response received: {len(llm_response)} characters")
+            # Sử dụng OpenAI client trực tiếp
+            if not client:
+                print("WARNING: No OpenAI client available, using original order")
+                llm_response = ""
+            else:
+                response = client.chat.completions.create(
+                    model="gpt-4o",
+                    messages=[
+                        {"role": "system", "content": "Bạn là một chuyên gia dinh dưỡng và ẩm thực."},
+                        {"role": "user", "content": prompt}
+                    ],
+                    max_tokens=2000,
+                    temperature=0.7
+                )
+                
+                llm_response = response.choices[0].message.content
+                print(f"DEBUG: LLM response received: {len(llm_response)} characters")
+                print(f"DEBUG: LLM response content: {llm_response}")
             
             # Parse kết quả từ LLM
             ranked_foods = parse_llm_rerank_response(llm_response, aggregated_foods)
+            
+            print(f"DEBUG: After parsing, ranked_foods count: {len(ranked_foods)}")
+            if ranked_foods:
+                print(f"DEBUG: First few ranked foods: {[f.get('dish_name', 'Unknown') for f in ranked_foods[:3]]}")
             
             if ranked_foods:
                 print(f"DEBUG: Successfully reranked {len(ranked_foods)} foods")
                 
                 result = {
                     "status": "success",
-                    "message": f"Đã rerank {len(ranked_foods)} món ăn theo thứ tự phù hợp",
+                    "message": f"Đã rerank và lọc {len(ranked_foods)} món ăn phù hợp",
                     "ranked_foods": ranked_foods,
                     "total_count": len(ranked_foods),
                     "rerank_criteria": {
@@ -93,13 +162,13 @@ def rerank_foods(state: Dict[str, Any]) -> Dict[str, Any]:
                     }
                 }
             else:
-                print("DEBUG: Failed to parse LLM response, using original order")
-                # Nếu không parse được, sử dụng thứ tự gốc
+                print("DEBUG: LLM did not select any foods, returning empty list")
+                # Nếu LLM không chọn món nào, trả về danh sách rỗng
                 result = {
                     "status": "success",
-                    "message": f"Sử dụng thứ tự gốc cho {len(aggregated_foods)} món ăn",
-                    "ranked_foods": aggregated_foods,
-                    "total_count": len(aggregated_foods),
+                    "message": f"Không tìm thấy món ăn phù hợp với yêu cầu của bạn",
+                    "ranked_foods": [],
+                    "total_count": 0,
                     "rerank_criteria": {
                         "bmi_category": bmi_category,
                         "medical_conditions": real_conditions,
@@ -110,12 +179,12 @@ def rerank_foods(state: Dict[str, Any]) -> Dict[str, Any]:
                 
         except Exception as e:
             print(f"DEBUG: LLM error: {e}")
-            # Nếu LLM lỗi, sử dụng thứ tự gốc
+            # Nếu LLM lỗi, trả về thông báo lỗi thay vì sử dụng thứ tự gốc
             result = {
-                "status": "success",
-                "message": f"Sử dụng thứ tự gốc cho {len(aggregated_foods)} món ăn (LLM error)",
-                "ranked_foods": aggregated_foods,
-                "total_count": len(aggregated_foods),
+                "status": "error",
+                "message": f"Lỗi khi rerank món ăn: {str(e)}",
+                "ranked_foods": [],
+                "total_count": 0,
                 "rerank_criteria": {
                     "bmi_category": bmi_category,
                     "medical_conditions": real_conditions,
@@ -134,21 +203,34 @@ def parse_llm_rerank_response(llm_response: str, original_foods: List[Dict]) -> 
     Parse kết quả rerank từ LLM
     """
     try:
+        if not llm_response:
+            print("DEBUG: No LLM response to parse")
+            return []
+            
+        print(f"DEBUG: Parsing LLM response: {llm_response[:200]}...")
+        
         # Tạo mapping từ tên món ăn đến object gốc
         food_mapping = {}
         for food in original_foods:
             food_name = food.get("dish_name", "").lower().strip()
             food_mapping[food_name] = food
         
+        print(f"DEBUG: Created mapping for {len(food_mapping)} original foods")
+        print(f"DEBUG: Original food names: {list(food_mapping.keys())[:5]}")
+        
         # Tìm các tên món ăn trong response của LLM
         ranked_foods = []
         lines = llm_response.split('\n')
         
-        for line in lines:
+        print(f"DEBUG: Processing {len(lines)} lines from LLM response")
+        
+        for i, line in enumerate(lines):
             line = line.strip()
             if not line:
                 continue
                 
+            print(f"DEBUG: Processing line {i+1}: '{line}'")
+            
             # Tìm số thứ tự và tên món ăn
             # Format có thể là: "1. Tên món ăn" hoặc "1) Tên món ăn" hoặc "1- Tên món ăn"
             import re
@@ -159,6 +241,9 @@ def parse_llm_rerank_response(llm_response: str, original_foods: List[Dict]) -> 
                 r'^\d+\)\s*(.+)',  # 1) Tên món
                 r'^\d+-\s*(.+)',   # 1- Tên món
                 r'^\d+\s+(.+)',    # 1 Tên món
+                r'^-\s*(.+)',      # - Tên món
+                r'^\*\s*(.+)',     # * Tên món
+                r'^•\s*(.+)',      # • Tên món
             ]
             
             food_name = None
@@ -166,26 +251,43 @@ def parse_llm_rerank_response(llm_response: str, original_foods: List[Dict]) -> 
                 match = re.match(pattern, line)
                 if match:
                     food_name = match.group(1).strip()
+                    print(f"DEBUG: Found food name with pattern {pattern}: '{food_name}'")
                     break
+            
+            # Nếu không tìm thấy với pattern, thử lấy toàn bộ line nếu không có số
+            if not food_name and not re.match(r'^\d+', line):
+                food_name = line.strip()
+                print(f"DEBUG: Using entire line as food name: '{food_name}'")
             
             if food_name:
                 # Tìm món ăn trong mapping
                 food_name_lower = food_name.lower().strip()
+                print(f"DEBUG: Looking for food: '{food_name_lower}'")
+                
+                found = False
                 for original_name, original_food in food_mapping.items():
                     if food_name_lower in original_name or original_name in food_name_lower:
                         if original_food not in ranked_foods:  # Tránh trùng lặp
                             ranked_foods.append(original_food)
+                            print(f"DEBUG: Found match: '{food_name_lower}' -> '{original_name}'")
+                            found = True
                             break
+                
+                if not found:
+                    print(f"DEBUG: No match found for: '{food_name_lower}'")
         
-        # Nếu không parse được đủ, thêm các món còn lại
-        if len(ranked_foods) < len(original_foods):
-            for food in original_foods:
-                if food not in ranked_foods:
-                    ranked_foods.append(food)
+        # Chỉ trả về những món mà LLM đã chọn, không thêm món gốc
+        # Nếu LLM không trả về món nào, trả về danh sách rỗng
+        print(f"DEBUG: LLM selected {len(ranked_foods)} foods out of {len(original_foods)} original foods")
+        
+        if ranked_foods:
+            print(f"DEBUG: Selected foods: {[f.get('dish_name', 'Unknown') for f in ranked_foods]}")
         
         print(f"DEBUG: Parsed {len(ranked_foods)} foods from LLM response")
         return ranked_foods
         
     except Exception as e:
         print(f"DEBUG: Error parsing LLM response: {e}")
+        import traceback
+        traceback.print_exc()
         return [] 

@@ -70,6 +70,16 @@ def aggregate_suitable_foods(state: Dict[str, Any]) -> Dict[str, Any]:
         print(f"DEBUG: Final aggregated foods count: {len(final_foods)}")
         print(f"DEBUG: Final foods sample: {final_foods[:3] if final_foods else 'No foods'}")
         
+        # Fallback: nếu không có món ăn phù hợp, trả về món ăn phổ biến
+        if not final_foods:
+            print("DEBUG: No foods after aggregation, using popular foods fallback")
+            try:
+                popular_foods = GraphSchemaService.get_popular_foods(limit=20)
+                final_foods = popular_foods
+            except Exception as e:
+                print(f"Error getting popular foods: {e}")
+                final_foods = []
+        
         result = {
             "status": "success",
             "message": f"Tìm thấy {len(final_foods)} món ăn phù hợp",

@@ -10,36 +10,18 @@ def query_neo4j_for_foods(state: Dict[str, Any]) -> Dict[str, Any]:
         selected_emotion = state.get("selected_emotion")
         selected_cooking_methods = state.get("selected_cooking_methods", [])
         bmi_result = state.get("bmi_result", {})
-        
-        # Lấy danh sách tình trạng bệnh từ user_data
         medical_conditions = user_data.get("medicalConditions", [])
-        
-        # Lấy thông tin BMI
         bmi_category = bmi_result.get("bmi_category", "") if bmi_result else ""
-        
-        # Kiểm tra có bệnh thực sự hay không
         real_conditions = []
         if medical_conditions:
             for condition in medical_conditions:
                 condition_lower = condition.lower().strip()
                 if condition_lower not in ["không có", "không bệnh", "không có bệnh", "bình thường", "khỏe mạnh"]:
                     real_conditions.append(condition)
-        
         has_conditions = len(real_conditions) > 0
         has_emotion = selected_emotion and selected_emotion.strip()
         has_cooking_methods = selected_cooking_methods and len(selected_cooking_methods) > 0
         has_bmi = bmi_category and bmi_category.strip()
-        
-        # Debug prints
-        print(f"DEBUG: has_conditions = {has_conditions}, real_conditions = {real_conditions}")
-        print(f"DEBUG: has_emotion = {has_emotion}, selected_emotion = '{selected_emotion}'")
-        print(f"DEBUG: has_cooking_methods = {has_cooking_methods}, selected_cooking_methods = {selected_cooking_methods}")
-        print(f"DEBUG: has_bmi = {has_bmi}, bmi_category = '{bmi_category}'")
-        
-        # Nếu không có tiêu chí nào, trả về món ăn phổ biến
-        if not has_conditions and not has_emotion and not has_cooking_methods and not has_bmi:
-            print("DEBUG: No criteria found, returning popular foods")
-            return query_popular_foods()
 
         all_foods = {}
         conditions_checked = []
@@ -50,65 +32,67 @@ def query_neo4j_for_foods(state: Dict[str, Any]) -> Dict[str, Any]:
         all_cook_methods = {}
         detailed_analysis = {}
 
-        # 1. Truy vấn dựa trên bệnh
+        # 1. Lọc theo bệnh
         if has_conditions:
             for condition in real_conditions:
-                try:
-                    advanced_foods = GraphSchemaService.get_foods_by_disease_advanced(condition)
-                    if advanced_foods:
-                        all_foods[f"condition_{condition}"] = {"advanced": advanced_foods, "source": "medical_condition"}
-                        conditions_checked.append(condition)
-                        all_diet_recommendations[condition] = GraphSchemaService.get_diet_recommendations_by_disease(condition)
-                        all_cook_methods[condition] = GraphSchemaService.get_cook_methods_by_disease(condition)
-                except Exception as e:
-                    print(f"Lỗi truy vấn cho condition '{condition}': {str(e)}")
-
-        # 2. Truy vấn dựa trên cảm xúc
+                advanced_foods = GraphSchemaService.get_foods_by_disease_advanced(condition)
+                print(f"[LỌC BỆNH] {condition}: {len(advanced_foods)} món đầu vào")
+                if advanced_foods:
+                    all_foods[f"condition_{condition}"] = {"advanced": advanced_foods, "source": "medical_condition"}
+                    conditions_checked.append(condition)
+                    all_diet_recommendations[condition] = GraphSchemaService.get_diet_recommendations_by_disease(condition)
+                    all_cook_methods[condition] = GraphSchemaService.get_cook_methods_by_disease(condition)
+                print(f"[LỌC BỆNH] {condition}: {len(advanced_foods)} món sau lọc, ví dụ: {[f.get('dish_name','?') for f in advanced_foods[:3]]}")
+        # 2. Lọc theo BMI
+        if has_bmi:
+            bmi_foods = GraphSchemaService.get_foods_by_bmi(bmi_category.lower())
+            print(f"[LỌC BMI] {bmi_category}: {len(bmi_foods)} món đầu vào")
+            if bmi_foods:
+                all_foods[f"bmi_{bmi_category}"] = {"advanced": bmi_foods, "source": "bmi"}
+                bmi_checked.append(bmi_category)
+            print(f"[LỌC BMI] {bmi_category}: {len(bmi_foods)} món sau lọc, ví dụ: {[f.get('dish_name','?') for f in bmi_foods[:3]]}")
+        # 3. Lọc theo cảm xúc
         if has_emotion:
-            try:
-                print(f"DEBUG: Querying foods for emotion: {selected_emotion}")
-                emotion_foods = GraphSchemaService.get_foods_by_emotion(selected_emotion)
-                print(f"DEBUG: Found {len(emotion_foods) if emotion_foods else 0} foods for emotion")
-                if emotion_foods:
-                    all_foods[f"emotion_{selected_emotion}"] = {"advanced": emotion_foods, "source": "emotion"}
-                    emotions_checked.append(selected_emotion)
-            except Exception as e:
-                print(f"Lỗi truy vấn cho emotion '{selected_emotion}': {str(e)}")
-
-        # 3. Truy vấn dựa trên phương pháp nấu
+            emotion_foods = GraphSchemaService.get_foods_by_emotion(selected_emotion)
+            print(f"[LỌC CẢM XÚC] {selected_emotion}: {len(emotion_foods)} món đầu vào")
+            if emotion_foods:
+                all_foods[f"emotion_{selected_emotion}"] = {"advanced": emotion_foods, "source": "emotion"}
+                emotions_checked.append(selected_emotion)
+            print(f"[LỌC CẢM XÚC] {selected_emotion}: {len(emotion_foods)} món sau lọc, ví dụ: {[f.get('dish_name','?') for f in emotion_foods[:3]]}")
+        # 4. Lọc theo phương pháp nấu
         if has_cooking_methods:
             for method in selected_cooking_methods:
-                try:
-                    print(f"DEBUG: Querying foods for cooking method: {method}")
-                    method_foods = GraphSchemaService.get_foods_by_cooking_method(method)
-                    print(f"DEBUG: Found {len(method_foods) if method_foods else 0} foods for method {method}")
-                    if method_foods:
-                        all_foods[f"cooking_{method}"] = {"advanced": method_foods, "source": "cooking_method"}
-                        cooking_methods_checked.append(method)
-                except Exception as e:
-                    print(f"Lỗi truy vấn cho cooking method '{method}': {str(e)}")
-
-        # 4. Truy vấn dựa trên BMI
-        if has_bmi:
-            try:
-                print(f"DEBUG: Querying foods for BMI category: {bmi_category}")
-                bmi_foods = GraphSchemaService.get_foods_by_bmi(bmi_category.lower())
-                print(f"DEBUG: Found {len(bmi_foods) if bmi_foods else 0} foods for BMI")
-                if bmi_foods:
-                    all_foods[f"bmi_{bmi_category}"] = {"advanced": bmi_foods, "source": "bmi"}
-                    bmi_checked.append(bmi_category)
-            except Exception as e:
-                print(f"Lỗi truy vấn cho BMI '{bmi_category}': {str(e)}")
-
-        print(f"DEBUG: all_foods keys = {list(all_foods.keys())}")
-        print(f"DEBUG: all_foods count = {len(all_foods)}")
-        
+                method_foods = GraphSchemaService.get_foods_by_cooking_method(method)
+                print(f"[LỌC PHƯƠNG PHÁP NẤU] {method}: {len(method_foods)} món đầu vào")
+                if method_foods:
+                    all_foods[f"cooking_{method}"] = {"advanced": method_foods, "source": "cooking_method"}
+                    cooking_methods_checked.append(method)
+                print(f"[LỌC PHƯƠNG PHÁP NẤU] {method}: {len(method_foods)} món sau lọc, ví dụ: {[f.get('dish_name','?') for f in method_foods[:3]]}")
+        # Nếu không có tiêu chí nào, trả về món ăn phổ biến
         if not all_foods:
-            print("DEBUG: No foods found, returning all foods as fallback")
-            # Fallback: trả về tất cả món ăn nếu không tìm thấy theo tiêu chí
-            all_foods_result = query_all_foods()
-            return all_foods_result
-
+            print("[LỌC PHỔ BIẾN] Không có tiêu chí, trả về món phổ biến")
+            return query_popular_foods()
+        # 5. Lọc theo context (weather + time_of_day)
+        weather = state.get("weather")
+        time_of_day = state.get("time_of_day")
+        context_name = None
+        suggested_cook_methods = []
+        if weather and time_of_day:
+            context_name, suggested_cook_methods = GraphSchemaService.get_context_and_cook_methods(weather, time_of_day)
+            print(f"[LỌC CONTEXT] {context_name}: {len(suggested_cook_methods)} phương pháp nấu phù hợp")
+            if suggested_cook_methods:
+                filtered_all_foods = {}
+                for key, value in all_foods.items():
+                    advanced_foods = value.get("advanced", [])
+                    print(f"[LỌC CONTEXT] {key}: {len(advanced_foods)} món trước lọc context")
+                    filtered_advanced = [food for food in advanced_foods if food.get("cook_method") in suggested_cook_methods]
+                    print(f"[LỌC CONTEXT] {key}: {len(filtered_advanced)} món sau lọc context, ví dụ: {[f.get('dish_name','?') for f in filtered_advanced[:3]]}")
+                    if filtered_advanced:
+                        filtered_all_foods[key] = {**value, "advanced": filtered_advanced}
+                if filtered_all_foods:
+                    all_foods = filtered_all_foods
+                else:
+                    print("[LỌC CONTEXT] Không còn món ăn sau khi lọc context, giữ nguyên kết quả trước đó.")
         result = {
             "status": "success",
             "message": "Tìm thấy món ăn phù hợp.",
@@ -120,9 +104,6 @@ def query_neo4j_for_foods(state: Dict[str, Any]) -> Dict[str, Any]:
             "diet_recommendations": all_diet_recommendations,
             "cook_methods": all_cook_methods,
         }
-        
-        print(f"DEBUG: Returning result with {len(all_foods)} food categories")
-        # Trả về chỉ phần thay đổi của state theo quy tắc LangGraph
         return {"query_result": result}
     except Exception as e:
         return {"query_result": {"status": "error", "message": str(e)}}

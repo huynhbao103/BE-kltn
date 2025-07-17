@@ -336,3 +336,31 @@ class GraphSchemaService:
         with driver.session() as session:
             result = session.run(query, bmi_category=bmi_category)
             return [record.data() for record in result]
+    
+    @staticmethod
+    def get_context_and_cook_methods(weather: str, time_of_day: str):
+        """
+        Lấy context phù hợp từ weather + time_of_day, sau đó lấy danh sách cách chế biến (CookMethod) phù hợp với context đó.
+        """
+        # Query context
+        context_result = GraphSchemaService.run_custom_query(
+            """
+            MATCH (w:Weather {name: $weather})<-[:THUỘC_THỜI_TIẾT]-(ctx:Context)-[:THUỘC_THỜI_ĐIỂM]->(t:TimeOfDay {name: $time_of_day})
+            RETURN ctx.name AS context_name
+            """,
+            {"weather": weather, "time_of_day": time_of_day}
+        )
+        context_name = context_result[0]["context_name"] if context_result else None
+
+        # Query cook methods
+        suggested_cook_methods = []
+        if context_name:
+            cook_method_result = GraphSchemaService.run_custom_query(
+                """
+                MATCH (ctx:Context {name: $context_name})-[:PHÙ_HỢP_CHẾ_BIẾN_BẰNG]->(cm:CookMethod)
+                RETURN cm.name AS cook_method
+                """,
+                {"context_name": context_name}
+            )
+            suggested_cook_methods = [d["cook_method"] for d in cook_method_result]
+        return context_name, suggested_cook_methods

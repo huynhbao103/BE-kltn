@@ -35,6 +35,52 @@ class WorkflowState(TypedDict):
     selected_emotion: Optional[str]
     cooking_method_prompt: Optional[dict]
     selected_cooking_methods: Optional[List[str]]
+    session_id: Optional[str]
+    weather: str
+    time_of_day: str
+
+# Node kiểm tra session đầu workflow
+
+def check_session(state: WorkflowState) -> WorkflowState:
+    """
+    Kiểm tra state hiện tại hoặc session từ Redis để quyết định luồng đi.
+    Luồng này ưu tiên các lựa chọn đã có trong state hiện tại.
+    """
+    # Ưu tiên 1: Kiểm tra state được truyền vào trực tiếp từ request.
+    # Điều này xảy ra khi tiếp tục workflow (`/process-emotion-cooking`) sau khi người dùng đã cung cấp input.
+    # State này đã được điền sẵn `selected_emotion` và `selected_cooking_methods`.
+    if state.get("selected_emotion") and state.get("selected_cooking_methods"):
+        print("DEBUG: [check_session] State contains selections. Continuing to calculation.")
+        return {**state, "step": "session_complete"}
+
+    # Ưu tiên 2: Kiểm tra nếu có session_id được cung cấp từ client khi bắt đầu luồng mới.
+    session_id = state.get("session_id")
+    if session_id:
+        print(f"DEBUG: [check_session] No selections in state, but found session_id {session_id}. Loading from Redis.")
+        try:
+            # Tải state cũ từ Redis
+            session_state = load_state_from_redis(session_id)
+            
+            # Hợp nhất state từ Redis với state từ request hiện tại (ví dụ: câu hỏi mới).
+            # Giá trị trong `state` của request hiện tại sẽ ghi đè lên giá trị trong `session_state`.
+            merged_state = {**session_state, **state}
+
+            # Kiểm tra xem state đã hợp nhất có đủ thông tin chưa
+            if merged_state.get("selected_emotion") and merged_state.get("selected_cooking_methods"):
+                print("DEBUG: [check_session] Loaded Redis state is complete. Continuing to calculation.")
+                return {**merged_state, "step": "session_complete"}
+            else:
+                print("DEBUG: [check_session] Loaded Redis state is incomplete. Asking for input.")
+                # Sử dụng state đã hợp nhất để không mất dữ liệu cũ (như user_data).
+                return {**merged_state, "step": "need_emotion_and_cooking"}
+        except Exception:
+            # Session ID không hợp lệ hoặc hết hạn. Bắt đầu luồng mới.
+            print("DEBUG: [check_session] Session ID invalid. Starting new flow.")
+            return {**state, "step": "session_error"}
+
+    # Mặc định: Không có session trong state, cũng không có session_id. Bắt đầu luồng mới hoàn toàn.
+    print("DEBUG: [check_session] No session data found. Starting new flow.")
+    return {**state, "step": "session_not_found"}
 
 def identify_user(state: WorkflowState) -> WorkflowState:
     """Node 1: Xác định user từ user_id """
@@ -288,17 +334,19 @@ def rerank_foods_wrapper(state: WorkflowState) -> WorkflowState:
     print(f"DEBUG: rerank_foods_wrapper - Aggregated foods count: {len(state.get('aggregated_result', {}).get('aggregated_foods', []))}")
     try:
         # Gọi node rerank
-        rerank_result = rerank_foods(state)
-        
-        # Debug: Kiểm tra kết quả từ rerank_foods
-        print(f"DEBUG: rerank_result keys = {rerank_result.keys()}")
+        rerank_result_from_node = rerank_foods(state)
         
         # Lấy rerank_result từ kết quả
-        reranked_result = rerank_result.get("rerank_result", {})
+        reranked_result = rerank_result_from_node.get("rerank_result", {})
         
-        # Debug: Kiểm tra reranked_result
-        print(f"DEBUG: reranked_result status = {reranked_result.get('status')}")
-        print(f"DEBUG: reranked_result total_count = {reranked_result.get('total_count', 0)}")
+        # FALLBACK: Nếu LLM rerank và trả về danh sách rỗng, sử dụng lại danh sách đã tổng hợp
+        if reranked_result.get("status") == "success" and not reranked_result.get("ranked_foods"):
+            print("DEBUG: Rerank returned an empty list. Falling back to aggregated foods.")
+            aggregated_foods = state.get('aggregated_result', {}).get('aggregated_foods', [])
+            if aggregated_foods:
+                reranked_result["ranked_foods"] = aggregated_foods
+                reranked_result["message"] = "Không thể lọc chi tiết, trả về danh sách tổng hợp."
+                reranked_result["total_count"] = len(aggregated_foods)
         
         return {
             **state,
@@ -437,21 +485,27 @@ def should_continue(state: WorkflowState) -> str:
     if state.get("error"):
         return "end_with_error"
     step = state.get("step", "")
-    if step == "user_identified":
+    if step == "start":
+        return "check_session"
+    elif step in ["session_not_found", "session_error"]:
+        # Nếu không có session, bắt đầu luồng mới bằng cách xác định người dùng
+        return "identify_user"
+    elif step == "need_emotion_and_cooking":
+        # Dừng lại để FE lấy cả hai prompt
+        return "end_need_emotion_and_cooking"
+    elif step == "session_complete":
+        # Session có đủ thông tin, đi thẳng đến tính toán
+        return "calculate_bmi"
+    elif step == "user_identified":
         return "classify_topic"
     elif step == "topic_classified":
-        if state.get("topic_classification") == "no":
+        # Sau khi phân loại chủ đề, nếu hợp lệ thì yêu cầu nhập liệu
+        if state.get("topic_classification") == "không liên quan":
             return "end_rejected"
-        return "select_emotion"
-    elif step == "emotion_prompt_generated":
-        # Dừng lại để chờ user chọn cảm xúc
-        return "end_success"
-    elif step == "emotion_selected":
-        return "select_cooking_method"
-    elif step == "cooking_method_prompt_generated":
-        # Dừng lại để chờ user chọn phương pháp nấu
-        return "end_success"
+        # Chuyển đến node trả về cả 2 prompt
+        return "end_need_emotion_and_cooking"
     elif step == "cooking_method_selected":
+        # Step này chỉ được gọi khi FE gửi lên cả emotion và cooking method
         return "calculate_bmi"
     elif step == "bmi_calculated":
         return "query_neo4j"
@@ -464,6 +518,27 @@ def should_continue(state: WorkflowState) -> str:
     elif step == "result_generated":
         return "end_success"
     return "end_with_error"
+
+# Node end_need_emotion_and_cooking
+
+def end_need_emotion_and_cooking(state: WorkflowState) -> WorkflowState:
+    """Kết thúc để FE lấy cả emotion_prompt và cooking_method_prompt cùng lúc."""
+    # Sinh prompt cho cả emotion và cooking method
+    emotion_prompt = select_emotion_node()
+    cooking_method_prompt = select_cooking_method_node()
+    session_id = save_state_to_redis({**state, "emotion_prompt": emotion_prompt, "cooking_method_prompt": cooking_method_prompt})
+    return {
+        **state,
+        "emotion_prompt": emotion_prompt,
+        "cooking_method_prompt": cooking_method_prompt,
+        "session_id": session_id,
+        "final_result": {
+            "status": "need_emotion_and_cooking",
+            "emotion_prompt": emotion_prompt,
+            "cooking_method_prompt": cooking_method_prompt,
+            "session_id": session_id
+        }
+    }
 
 def end_with_error(state: WorkflowState) -> WorkflowState:
     """Kết thúc với lỗi"""
@@ -528,6 +603,7 @@ def create_workflow() -> StateGraph:
     # Tạo graph
     workflow = StateGraph(WorkflowState)
     # Thêm nodes
+    workflow.add_node("check_session", check_session)
     workflow.add_node("identify_user", identify_user)
     workflow.add_node("classify_topic", classify_topic)
     workflow.add_node("select_emotion", select_emotion_node_wrapper)
@@ -540,7 +616,17 @@ def create_workflow() -> StateGraph:
     workflow.add_node("end_with_error", end_with_error)
     workflow.add_node("end_rejected", end_rejected)
     workflow.add_node("end_success", end_success)
+    workflow.add_node("end_need_emotion_and_cooking", end_need_emotion_and_cooking)
     # Thêm router
+    workflow.add_conditional_edges(
+        "check_session",
+        should_continue,
+        {
+            "identify_user": "identify_user",
+            "calculate_bmi": "calculate_bmi",
+            "end_need_emotion_and_cooking": "end_need_emotion_and_cooking"
+        }
+    )
     workflow.add_conditional_edges(
         "identify_user",
         should_continue,
@@ -553,29 +639,14 @@ def create_workflow() -> StateGraph:
         "classify_topic",
         should_continue,
         {
-            "select_emotion": "select_emotion",
-            "end_rejected": "end_rejected",
-            "end_with_error": "end_with_error"
+            # Xóa các nhánh cũ, chỉ còn 2 nhánh này
+            "end_need_emotion_and_cooking": "end_need_emotion_and_cooking",
+            "end_rejected": "end_rejected"
         }
     )
-    workflow.add_conditional_edges(
-        "select_emotion",
-        should_continue,
-        {
-            "select_cooking_method": "select_cooking_method",
-            "end_success": "end_success",
-            "end_with_error": "end_with_error"
-        }
-    )
-    workflow.add_conditional_edges(
-        "select_cooking_method",
-        should_continue,
-        {
-            "calculate_bmi": "calculate_bmi",
-            "end_success": "end_success",
-            "end_with_error": "end_with_error"
-        }
-    )
+    # Xóa các conditional_edges của select_emotion và select_cooking_method
+    # vì chúng không còn được gọi trực tiếp nữa
+    
     workflow.add_conditional_edges(
         "calculate_bmi",
         should_continue,
@@ -617,22 +688,26 @@ def create_workflow() -> StateGraph:
         }
     )
     # Set entry point
-    workflow.set_entry_point("identify_user")
+    workflow.set_entry_point("check_session")
     # Add end nodes
     workflow.add_edge("end_with_error", END)
     workflow.add_edge("end_rejected", END)
     workflow.add_edge("end_success", END)
+    workflow.add_edge("end_need_emotion_and_cooking", END)
     return workflow
 
 # Tạo workflow instance
 workflow_graph = create_workflow().compile()
 
-def run_langgraph_workflow_until_selection(user_id: str, question: str) -> dict:
+def run_langgraph_workflow_until_selection(user_id: str, question: str, weather: str, time_of_day: str, session_id: str = None) -> dict:
     try:
         initial_state = {
             "user_id": user_id,
             "question": question,
             "user_data": {},
+            "weather": weather,
+            "time_of_day": time_of_day,
+            "session_id": session_id,
             "topic_classification": "",
             "bmi_result": {},
             "neo4j_result": {},
@@ -648,33 +723,9 @@ def run_langgraph_workflow_until_selection(user_id: str, question: str) -> dict:
             "selected_cooking_methods": None
         }
         result = workflow_graph.invoke(initial_state)
-
-        # Nếu workflow dừng lại để hỏi cảm xúc
-        if result.get("step") == "emotion_prompt_generated" and result.get("emotion_prompt"):
-            try:
-                session_id = save_state_to_redis(result)
-                return {
-                    "status": "need_emotion",
-                    "emotion_prompt": result["emotion_prompt"],
-                    "session_id": session_id
-                }
-            except Exception as e:
-                print(f"Error saving session state: {str(e)}")
-                raise HTTPException(status_code=500, detail="Lỗi lưu trạng thái workflow")
-
-        # Nếu workflow dừng lại để hỏi phương pháp nấu
-        if result.get("step") == "cooking_method_prompt_generated" and result.get("cooking_method_prompt"):
-            try:
-                session_id = save_state_to_redis(result)
-                return {
-                    "status": "need_cooking_method",
-                    "cooking_method_prompt": result["cooking_method_prompt"],
-                    "session_id": session_id
-                }
-            except Exception as e:
-                print(f"Error saving session state: {str(e)}")
-                raise HTTPException(status_code=500, detail="Lỗi lưu trạng thái workflow")
-
+        # Nếu workflow dừng lại để hỏi cả cảm xúc và phương pháp nấu
+        if result.get("final_result", {}).get("status") == "need_emotion_and_cooking":
+            return result["final_result"]
         # Các trường hợp kết thúc khác, trả về final_result
         return result.get("final_result", {
             "status": "error",
@@ -724,3 +775,32 @@ def continue_workflow_with_cooking_method(session_id: str, cooking_methods: List
         "status": "error",
         "message": "Không có kết quả"
     })
+
+def continue_workflow_with_emotion_and_cooking(session_id: str, emotion: str, cooking_methods: List[str], user_id: str) -> dict:
+    """Tải state, cập nhật emotion và cooking methods, và tiếp tục workflow."""
+    try:
+        # Tải state từ session
+        state = load_state_from_redis(session_id)
+        
+        # Cập nhật thông tin từ input
+        state["selected_emotion"] = emotion
+        state["selected_cooking_methods"] = cooking_methods
+        
+        # Quan trọng: Cập nhật lại user_id từ token hiện tại để đảm bảo bảo mật
+        # và lấy đúng dữ liệu user mới nhất nếu cần.
+        state["user_id"] = user_id
+        
+        # Đặt step để workflow tiếp tục từ điểm tính toán
+        state["step"] = "cooking_method_selected"
+        
+        # Gọi invoke để tiếp tục workflow
+        result = workflow_graph.invoke(state)
+        
+        # Trả về kết quả cuối cùng
+        return result.get("final_result", {
+            "status": "error",
+            "message": "Không có kết quả sau khi xử lý."
+        })
+    except Exception as e:
+        print(f"Error in continue_workflow_with_emotion_and_cooking: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Lỗi tiếp tục workflow: {str(e)}")

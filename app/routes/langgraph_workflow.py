@@ -4,7 +4,7 @@ from typing import Optional, List
 import jwt
 from app.graph.engine import (
     run_langgraph_workflow_until_selection, 
-    continue_workflow_with_emotion_and_cooking
+    continue_workflow_with_cooking_method
 )
 from app.config import JWT_SECRET_KEY
 
@@ -16,20 +16,9 @@ class WorkflowInput(BaseModel):
     time_of_day: str
     session_id: Optional[str] = None
 
-class EmotionInput(BaseModel):
-    session_id: str
-    emotion: str
-
 class CookingMethodInput(BaseModel):
     session_id: str
     cooking_methods: List[str]
-
-class EmotionAndCookingInput(BaseModel):
-    session_id: str
-    emotion: str
-    cooking_methods: List[str]
-
-
 
 def get_user_id_from_token(authorization: Optional[str] = Header(None)) -> str:
     """
@@ -85,70 +74,35 @@ def process_with_langgraph(
     user_id: str = Depends(get_user_id_from_token),
 ):
     try:
-        print(f"DEBUG: Received request with session_id: {data.session_id}")
-        
-        if data.session_id:
-            # Nếu có session_id, load state từ Redis
-            from app.utils.session_store import load_state_from_redis
-            from app.graph.engine import workflow_graph
-            try:
-                state = load_state_from_redis(data.session_id)
-                print(f"DEBUG: Loaded state from session, has emotion: {bool(state.get('selected_emotion'))}, has cooking methods: {bool(state.get('selected_cooking_methods'))}")
-                
-                # Nếu đã chọn cảm xúc và phương pháp nấu, chạy workflow tiếp luôn
-                if state.get("selected_emotion") and state.get("selected_cooking_methods"):
-                    print("DEBUG: Session has both emotion and cooking methods, continuing workflow...")
-                    # Cập nhật question, weather, time_of_day mới nếu có
-                    state["question"] = data.question
-                    state["weather"] = data.weather
-                    state["time_of_day"] = data.time_of_day
-                    # Đặt step để workflow tiếp tục từ sau khi đã chọn cả hai
-                    state["step"] = "cooking_method_selected"
-                    result = workflow_graph.invoke(state)
-                    print(f"DEBUG: Workflow completed, final step: {result.get('step')}")
-                    return result.get("final_result", {
-                        "status": "error",
-                        "message": "Không có kết quả"
-                    })
-                else:
-                    print("DEBUG: Session exists but missing emotion or cooking methods, starting fresh workflow")
-            except Exception as session_error:
-                print(f"Session error: {str(session_error)}")
-                # Nếu session không tồn tại hoặc lỗi, tiếp tục như bình thường
-        
-        # Nếu không có session_id hoặc session không hợp lệ, chạy workflow từ đầu
-        print("DEBUG: Starting fresh workflow")
-        result = run_langgraph_workflow_until_selection(user_id, data.question, data.weather, data.time_of_day, data.session_id)
+        # Chạy workflow từ đầu để lấy phân tích và prompts
+        result = run_langgraph_workflow_until_selection(
+            user_id, data.question, data.weather, data.time_of_day, data.session_id
+        )
         return result
     except Exception as e:
-        print(f"ERROR in process_with_langgraph: {str(e)}")
         raise HTTPException(
             status_code=500, 
             detail=f"Lỗi xử lý workflow: {str(e)}"
         )
 
-@router.post("/process-emotion-cooking")
-def process_emotion_and_cooking(
-    data: EmotionAndCookingInput,
+@router.post("/process-cooking")
+def process_cooking_method(
+    data: CookingMethodInput,
     user_id: str = Depends(get_user_id_from_token)
 ):
     """
-    Nhận cảm xúc và phương pháp chế biến cùng lúc, trả về kết quả cuối cùng.
+    Nhận phương pháp chế biến, trả về kết quả cuối cùng.
     """
     try:
-        # Gọi hàm mới từ engine để xử lý
-        result = continue_workflow_with_emotion_and_cooking(
+        result = continue_workflow_with_cooking_method(
             session_id=data.session_id,
-            emotion=data.emotion,
             cooking_methods=data.cooking_methods,
-            user_id=user_id  # Truyền user_id từ token vào
+            user_id=user_id
         )
         return result
     except HTTPException as he:
-        # Re-raise HTTPException để giữ nguyên status code và detail
         raise he
     except Exception as e:
-        print(f"ERROR in process_emotion_and_cooking: {str(e)}")
         import traceback
         traceback.print_exc()
         raise HTTPException(

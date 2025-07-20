@@ -7,8 +7,9 @@ from typing import Dict, Any
 session_store: Dict[str, Dict[str, Any]] = {}
 session_timestamps: Dict[str, float] = {}
 
-def save_state_to_redis(state: dict, ttl: int = 3600) -> str:
-    session_id = str(uuid.uuid4())
+def save_state_to_redis(state: dict, session_id: str = None, ttl: int = 3600) -> str:
+    if session_id is None:
+        session_id = str(uuid.uuid4())
     session_store[session_id] = state
     session_timestamps[session_id] = time.time() + ttl
     return session_id

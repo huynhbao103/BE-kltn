@@ -38,48 +38,23 @@ class WorkflowState(TypedDict):
     session_id: Optional[str]
     weather: str
     time_of_day: str
+    previous_food_ids: Optional[List[str]]
 
 # Node kiểm tra session đầu workflow
 
 def check_session(state: WorkflowState) -> WorkflowState:
     """
-    Kiểm tra state hiện tại hoặc session từ Redis để quyết định luồng đi.
-    Luồng này ưu tiên các lựa chọn đã có trong state hiện tại.
+    Kiểm tra state được truyền vào để quyết định luồng đi.
+    State này đã được nạp từ Redis ở entry point nếu có session.
     """
-    # Ưu tiên 1: Kiểm tra state được truyền vào trực tiếp từ request.
-    # Điều này xảy ra khi tiếp tục workflow (`/process-emotion-cooking`) sau khi người dùng đã cung cấp input.
-    # State này đã được điền sẵn `selected_emotion` và `selected_cooking_methods`.
+    # Nếu state đã có emotion và cooking method (trường hợp tiếp tục luồng từ `continue_...`)
     if state.get("selected_emotion") and state.get("selected_cooking_methods"):
         print("DEBUG: [check_session] State contains selections. Continuing to calculation.")
         return {**state, "step": "session_complete"}
 
-    # Ưu tiên 2: Kiểm tra nếu có session_id được cung cấp từ client khi bắt đầu luồng mới.
-    session_id = state.get("session_id")
-    if session_id:
-        print(f"DEBUG: [check_session] No selections in state, but found session_id {session_id}. Loading from Redis.")
-        try:
-            # Tải state cũ từ Redis
-            session_state = load_state_from_redis(session_id)
-            
-            # Hợp nhất state từ Redis với state từ request hiện tại (ví dụ: câu hỏi mới).
-            # Giá trị trong `state` của request hiện tại sẽ ghi đè lên giá trị trong `session_state`.
-            merged_state = {**session_state, **state}
-
-            # Kiểm tra xem state đã hợp nhất có đủ thông tin chưa
-            if merged_state.get("selected_emotion") and merged_state.get("selected_cooking_methods"):
-                print("DEBUG: [check_session] Loaded Redis state is complete. Continuing to calculation.")
-                return {**merged_state, "step": "session_complete"}
-            else:
-                print("DEBUG: [check_session] Loaded Redis state is incomplete. Asking for input.")
-                # Sử dụng state đã hợp nhất để không mất dữ liệu cũ (như user_data).
-                return {**merged_state, "step": "need_emotion_and_cooking"}
-        except Exception:
-            # Session ID không hợp lệ hoặc hết hạn. Bắt đầu luồng mới.
-            print("DEBUG: [check_session] Session ID invalid. Starting new flow.")
-            return {**state, "step": "session_error"}
-
-    # Mặc định: Không có session trong state, cũng không có session_id. Bắt đầu luồng mới hoàn toàn.
-    print("DEBUG: [check_session] No session data found. Starting new flow.")
+    # Nếu không, đây là một lượt hỏi mới, cần bắt đầu luồng xác định người dùng.
+    # Logic nạp session đã được xử lý ở `run_langgraph_workflow_until_selection`.
+    print("DEBUG: [check_session] No selections in state. Starting new user identification flow.")
     return {**state, "step": "session_not_found"}
 
 def identify_user(state: WorkflowState) -> WorkflowState:
@@ -327,33 +302,21 @@ def aggregate_foods(state: WorkflowState) -> WorkflowState:
 
 def rerank_foods_wrapper(state: WorkflowState) -> WorkflowState:
     """ Node 8: Rerank các món ăn sử dụng LLM """
-    print(f"DEBUG: rerank_foods_wrapper - Starting with question: {state.get('question')}")
-    print(f"DEBUG: rerank_foods_wrapper - User data: {state.get('user_data', {}).get('name', 'Unknown')}")
-    print(f"DEBUG: rerank_foods_wrapper - Selected emotion: {state.get('selected_emotion')}")
-    print(f"DEBUG: rerank_foods_wrapper - Selected cooking methods: {state.get('selected_cooking_methods')}")
-    print(f"DEBUG: rerank_foods_wrapper - Aggregated foods count: {len(state.get('aggregated_result', {}).get('aggregated_foods', []))}")
     try:
-        # Gọi node rerank
         rerank_result_from_node = rerank_foods(state)
-        
-        # Lấy rerank_result từ kết quả
         reranked_result = rerank_result_from_node.get("rerank_result", {})
-        
-        # FALLBACK: Nếu LLM rerank và trả về danh sách rỗng, sử dụng lại danh sách đã tổng hợp
+
+        # Nếu LLM rerank và trả về danh sách rỗng, KHÔNG fallback sang aggregated foods nữa
         if reranked_result.get("status") == "success" and not reranked_result.get("ranked_foods"):
-            print("DEBUG: Rerank returned an empty list. Falling back to aggregated foods.")
-            aggregated_foods = state.get('aggregated_result', {}).get('aggregated_foods', [])
-            if aggregated_foods:
-                reranked_result["ranked_foods"] = aggregated_foods
-                reranked_result["message"] = "Không thể lọc chi tiết, trả về danh sách tổng hợp."
-                reranked_result["total_count"] = len(aggregated_foods)
-        
+            reranked_result["message"] = "Không có món ăn nào đáp ứng yêu cầu của bạn."
+            reranked_result["total_count"] = 0
+            # KHÔNG fallback sang aggregated_foods
+
         return {
             **state,
             "rerank_result": reranked_result,
             "step": "foods_reranked"
         }
-        
     except Exception as e:
         return {
             **state,
@@ -372,30 +335,27 @@ def generate_final_result(state: WorkflowState) -> WorkflowState:
         bmi_result = state.get("bmi_result", {})
         rerank_result = state.get("rerank_result", {})
         selected_emotion = state.get("selected_emotion")
+        previous_food_ids = state.get("previous_food_ids", [])
+        session_id = state.get("session_id")
 
-        # Tạo message chi tiết với các chỉ số
         message_parts = []
-        
-        # Lấy thông tin medical_conditions từ user_data
         medical_conditions = user_data.get("medicalConditions", [])
-        
-        # Trích xuất danh sách món ăn đã được rerank
         final_foods = []
+        newly_suggested_food_ids = []
         if rerank_result and rerank_result.get("status") == "success":
             ranked_foods = rerank_result.get("ranked_foods", [])
             rerank_criteria = rerank_result.get("rerank_criteria", {})
             total_count = rerank_result.get("total_count", 0)
             selected_cooking_methods = state.get("selected_cooking_methods", [])
- 
-            # Debug: Kiểm tra ranked_foods
-            print(f"DEBUG: ranked_foods count = {len(ranked_foods)}")
-            print(f"DEBUG: total_count = {total_count}")
-            
-            # Xử lý danh sách món ăn đã được rerank
+
+            # Chỉ giữ lại log kiểm tra duplicate
             for food in ranked_foods:
+                food_id = food.get("dish_id", "")
+                if food_id:
+                    newly_suggested_food_ids.append(food_id)
                 final_foods.append({
                     "name": food.get("dish_name", "Unknown"),
-                    "id": food.get("dish_id", ""),
+                    "id": food_id,
                     "description": food.get("description", ""),
                     "category": "ranked",
                     "cook_method": food.get("cook_method", ""),
@@ -406,51 +366,26 @@ def generate_final_result(state: WorkflowState) -> WorkflowState:
                     "fat": food.get("fat", 0),
                     "carbs": food.get("carbs", 0)
                 })
- 
-            # Hiển thị số lượng món ăn đã được rerank
+
+            # Log kiểm tra duplicate trong foods trả về
+            for food in final_foods:
+                if food.get("id") in previous_food_ids:
+                    print(f"DUPLICATE WARNING: Food '{food.get('name')}' ({food.get('id')}) đã từng được gợi ý!")
+
             if final_foods:
-                # Chỉ hiển thị 5 món đầu tiên trong message
                 food_names = [food.get("name", "Unknown") for food in final_foods[:5]]
                 if len(final_foods) > 5:
-                    # food_names.append(f"... và {len(final_foods) - 5} món khác")
                     food_names = [food.get("name", "Unknown") for food in final_foods]
                 message_parts.append(f"Danh sách món ăn phù hợp: {', '.join(food_names)}")
-                
-                # # Thêm thông tin về tiêu chí đã sử dụng
-                # if rerank_criteria:
-                #     criteria_info = []
-                #     if rerank_criteria.get("bmi_category"):
-                #         criteria_info.append(f"BMI: {rerank_criteria['bmi_category']}")
-                #     if rerank_criteria.get("cooking_methods"):
-                #         criteria_info.append(f"Cách chế biến: {', '.join(rerank_criteria['cooking_methods'])}")
-                #     if rerank_criteria.get("medical_conditions"):
-                #         criteria_info.append(f"Bệnh: {', '.join(rerank_criteria['medical_conditions'])}")
-                #     if rerank_criteria.get("emotion"):
-                #         criteria_info.append(f"Cảm xúc: {rerank_criteria['emotion']}")
-                    
-                #     if criteria_info:
-                #         message_parts.append(f"Tiêu chí: {' | '.join(criteria_info)}")
-                
-                # # Thêm thông tin tổng số món
                 message_parts.append(f"Tổng cộng: {total_count} món ăn")
             else:
-                message_parts.append("Không có món ăn phù hợp với các tiêu chí của bạn")
+                if previous_food_ids:
+                    message_parts.append("Chúng tôi đã gợi ý hết các món ăn phù hợp với yêu cầu của bạn.")
+                else:
+                    message_parts.append(" Chúng tôi không có món ăn phù hợp với các tiêu chí của bạn")
 
-        # Tạo message hoàn chỉnh
         detailed_message = " | ".join(message_parts)
-        
-        # Debug: Kiểm tra final_foods
-        print(f"DEBUG: final_foods length = {len(final_foods)}")
-        if not final_foods:
-            print("DEBUG: final_foods is empty!")
-            print(f"DEBUG: rerank_result status = {rerank_result.get('status') if rerank_result else 'None'}")
-            
-            if rerank_result and rerank_result.get("status") == "success":
-                print(f"DEBUG: ranked_foods count = {len(rerank_result.get('ranked_foods', []))}")
-                print(f"DEBUG: rerank_criteria = {rerank_result.get('rerank_criteria', {})}")
-                print(f"DEBUG: total_count = {rerank_result.get('total_count', 0)}")
-        
-        # Kết quả cuối cùng chỉ chứa thông tin cần thiết
+
         final_result = {
             "status": "success",
             "message": detailed_message,
@@ -466,19 +401,38 @@ def generate_final_result(state: WorkflowState) -> WorkflowState:
             "selected_emotion": selected_emotion,
             "selected_cooking_methods": state.get("selected_cooking_methods", []),
             "rerank_criteria": rerank_result.get("rerank_criteria", {}) if rerank_result else {},
-            "timestamp": datetime.now().isoformat()
+            "timestamp": datetime.now().isoformat(),
+            "session_id": session_id
         }
-        
+
+        previous_food_ids = state.get("previous_food_ids", [])
+        newly_suggested_food_ids = [food.get("id") or food.get("dish_id") for food in final_foods if food.get("id") or food.get("dish_id")]
+        updated_previous_food_ids = list(set(previous_food_ids + newly_suggested_food_ids))
+
+        # Lưu lại state mới vào Redis để đảm bảo loại trừ món đã gợi ý
+        if session_id:
+            try:
+                save_state_to_redis({**state, "previous_food_ids": updated_previous_food_ids}, session_id)
+            except Exception as e:
+                print(f"ERROR: [generate_final_result] Failed to save updated previous_food_ids to Redis: {e}")
+
         return {
             **state,
             "final_result": final_result,
+            "previous_food_ids": updated_previous_food_ids,
             "step": "result_generated"
         }
     except Exception as e:
+        session_id = state.get("session_id")
         return {
             **state,
             "error": f"Lỗi tạo kết quả: {str(e)}",
-            "step": "result_generation_error"
+            "step": "result_generation_error",
+            "final_result": {
+                "status": "error",
+                "message": f"Lỗi tạo kết quả: {str(e)}",
+                "session_id": session_id
+            }
         }
 
 def should_continue(state: WorkflowState) -> str:
@@ -542,12 +496,14 @@ def end_need_emotion_and_cooking(state: WorkflowState) -> WorkflowState:
 
 def end_with_error(state: WorkflowState) -> WorkflowState:
     """Kết thúc với lỗi"""
+    session_id = state.get("session_id")
     return {
         **state,
         "final_result": {
             "status": "error",
             "message": state.get("error", "Lỗi không xác định"),
-            "timestamp": datetime.now().isoformat()
+            "timestamp": datetime.now().isoformat(),
+            "session_id": session_id
         }
     }
 
@@ -555,7 +511,7 @@ def end_rejected(state: WorkflowState) -> WorkflowState:
     """Kết thúc khi câu hỏi không thuộc chủ đề"""
     user_data = state.get("user_data", {})
     question = state.get("question", "")
-    
+    session_id = state.get("session_id")
     # Tạo message chi tiết cho trường hợp rejected
     user_name = user_data.get("name", "Unknown")
     user_age = user_data.get("age", "N/A")
@@ -586,16 +542,31 @@ def end_rejected(state: WorkflowState) -> WorkflowState:
                 "medical_conditions": medical_conditions if medical_conditions and medical_conditions != ["Không có"] else []
             },
             "question": question,
-            "timestamp": datetime.now().isoformat()
+            "timestamp": datetime.now().isoformat(),
+            "session_id": session_id
         }
     }
 
 def end_success(state: WorkflowState) -> WorkflowState:
     """
-    Kết thúc thành công. Node này không làm gì cả, 
-    chỉ trả về state hiện tại để giữ nguyên final_result đã được tạo ở node trước.
+    Kết thúc thành công. Cập nhật lại state vào Redis để lưu lại các món đã gợi ý.
+    Luôn trả về session_id trong final_result.
     """
-    return state
+    session_id = state.get("session_id")
+    if session_id:
+        try:
+            save_state_to_redis(state, session_id)
+            print(f"DEBUG: [end_success] State saved to Redis for session {session_id}")
+        except Exception as e:
+            # Không nên raise lỗi ở đây để tránh làm hỏng kết quả trả về cho user
+            print(f"ERROR: [end_success] Failed to save state to Redis: {e}")
+    # Đảm bảo final_result luôn có session_id
+    final_result = state.get("final_result", {})
+    if isinstance(final_result, dict):
+        final_result["session_id"] = session_id
+        return {**state, "final_result": final_result}
+    else:
+        return {**state, "final_result": {"session_id": session_id}}
 
 # Tạo LangGraph workflow
 def create_workflow() -> StateGraph:
@@ -639,13 +610,12 @@ def create_workflow() -> StateGraph:
         "classify_topic",
         should_continue,
         {
-            # Xóa các nhánh cũ, chỉ còn 2 nhánh này
+           
             "end_need_emotion_and_cooking": "end_need_emotion_and_cooking",
             "end_rejected": "end_rejected"
         }
     )
-    # Xóa các conditional_edges của select_emotion và select_cooking_method
-    # vì chúng không còn được gọi trực tiếp nữa
+ 
     
     workflow.add_conditional_edges(
         "calculate_bmi",
@@ -701,6 +671,7 @@ workflow_graph = create_workflow().compile()
 
 def run_langgraph_workflow_until_selection(user_id: str, question: str, weather: str, time_of_day: str, session_id: str = None) -> dict:
     try:
+        # State mặc định cho một session hoàn toàn mới
         initial_state = {
             "user_id": user_id,
             "question": question,
@@ -720,8 +691,20 @@ def run_langgraph_workflow_until_selection(user_id: str, question: str, weather:
             "emotion_prompt": None,
             "selected_emotion": None,
             "cooking_method_prompt": None,
-            "selected_cooking_methods": None
+            "selected_cooking_methods": None,
+            "previous_food_ids": []
         }
+
+        if session_id:
+            try:
+                loaded_state = load_state_from_redis(session_id)
+                # Merge toàn bộ state cũ vào initial_state (ưu tiên giá trị đã lưu nếu trùng key)
+                merged_state = {**initial_state, **loaded_state}
+                initial_state = merged_state
+                print("DEBUG: Loaded state from session", session_id, "previous_food_ids:", initial_state.get("previous_food_ids"))
+            except Exception as e:
+                print("DEBUG: Could not load state for session", session_id, "Error:", e)
+
         result = workflow_graph.invoke(initial_state)
         # Nếu workflow dừng lại để hỏi cả cảm xúc và phương pháp nấu
         if result.get("final_result", {}).get("status") == "need_emotion_and_cooking":
@@ -738,7 +721,7 @@ def run_langgraph_workflow_until_selection(user_id: str, question: str, weather:
 def continue_workflow_with_emotion(session_id: str, emotion: str) -> dict:
     state = load_state_from_redis(session_id)
     state["selected_emotion"] = emotion
-    # Reset step để workflow tiếp tục từ select_emotion
+  
     state["step"] = "emotion_selected"
 
     result = workflow_graph.invoke(state)

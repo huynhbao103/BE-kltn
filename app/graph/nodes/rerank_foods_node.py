@@ -72,11 +72,16 @@ def rerank_foods(state: Dict[str, Any]) -> Dict[str, Any]:
             cooking_text = ", ".join(selected_cooking_methods)
         
         # Tạo prompt mới, rõ ràng và ổn định hơn
+        previous_food_ids = state.get("previous_food_ids", [])
+        previous_foods_text = ""
+        if previous_food_ids:
+            previous_foods_text = f"\n\n**Lưu ý QUAN TRỌNG:**\n- KHÔNG ĐƯỢC chọn lại bất kỳ món ăn nào có id trong danh sách sau (đây là các món đã được gợi ý trước đó): {previous_food_ids}\n"
+
         prompt = f"""Bạn là một chuyên gia dinh dưỡng và ẩm thực hàng đầu. Nhiệm vụ của bạn là giúp người dùng chọn món ăn phù hợp nhất từ một danh sách cho trước.
 
 **Thông tin người dùng:**
 - Tên: {user_name}
-- Câu hỏi: "{user_question}"
+- Câu hỏi: \"{user_question}\"
 - Phân loại BMI: {bmi_category}
 - Tình trạng bệnh: {conditions_text}
 - Cảm xúc hiện tại: {selected_emotion}
@@ -84,15 +89,16 @@ def rerank_foods(state: Dict[str, Any]) -> Dict[str, Any]:
 
 **Danh sách món ăn cần xử lý:**
 {foods_list}
-
+{previous_foods_text}
+**Lưu ý QUAN TRỌNG:**- KHÔNG ĐƯỢC chọn lại bất kỳ món ăn nào có id trong danh sách sau (đây là các món đã được gợi ý trước đó): {previous_food_ids}
 **YÊU CẦU:**
 
 **Bước 1: Xác định quy tắc lọc món ăn từ câu hỏi của người dùng.**
-- **QUAN TRỌNG:** Nếu câu hỏi KHÔNG chứa bất kỳ từ khóa nào về loại món ăn (như "chay", "mặn", "tráng miệng", "đồ ăn vặt", v.v.), bạn phải **GIỮ LẠI TOÀN BỘ DANH SÁCH MÓN ĂN** và chuyển thẳng đến Bước 3 để rerank.
-- Nếu câu hỏi yêu cầu **"món chay"**:
+- **QUAN TRỌNG:** Nếu câu hỏi KHÔNG chứa bất kỳ từ khóa nào về loại món ăn (như \"chay\", \"mặn\", \"tráng miệng\", \"đồ ăn vặt\", v.v.), bạn phải **GIỮ LẠI TOÀN BỘ DANH SÁCH MÓN ĂN** và chuyển thẳng đến Bước 3 để rerank.
+- Nếu câu hỏi yêu cầu **\"món chay\"**:
   - Quy tắc là **CHỈ GIỮ LẠI MÓN CHAY**.
   - Bạn PHẢI loại bỏ TẤT CẢ các món có chứa thịt, cá, hải sản, trứng và các sản phẩm từ động vật.
-- Nếu câu hỏi yêu cầu một loại cụ thể khác (ví dụ: "tráng miệng", "món chính", "khai vị", "soup", "salad"):
+- Nếu câu hỏi yêu cầu một loại cụ thể khác (ví dụ: \"tráng miệng\", \"món chính\", \"khai vị\", \"soup\", \"salad\"):
   - Quy tắc là **CHỈ GIỮ LẠI CÁC MÓN THUỘC LOẠI ĐÓ**.
   - Bạn cần tự suy luận dựa vào tên món ăn để phân loại.
 
@@ -103,15 +109,16 @@ def rerank_foods(state: Dict[str, Any]) -> Dict[str, Any]:
 **Bước 3: Sắp xếp (Rerank) danh sách món ăn đã lọc.**
 - Sắp xếp các món ăn trong danh sách đã lọc theo thứ tự phù hợp nhất với người dùng, dựa trên các tiêu chí sau (ưu tiên từ trên xuống dưới):
   1.  **Sự phù hợp với yêu cầu trong câu hỏi** (nếu có yêu cầu đặc biệt khác ngoài loại món ăn).
-  2.  **Sức khỏe:** Phù hợp với tình trạng bệnh ({conditions_text}) và BMI ({bmi_category}).
+  2.  **Sức khỏe:** Phù hợp với tình trạng bệnh ({conditions_text}).
   3.  **Sở thích:** Phù hợp với cách chế biến ưa thích ({cooking_text}).
   4.  **Cảm xúc:** Phù hợp với cảm xúc hiện tại ({selected_emotion}).
   5.  Mức độ phổ biến và cân bằng dinh dưỡng.
 - **Loại bỏ** những món không thực sự phù hợp với các tiêu chí trên.
+- **TUYỆT ĐỐI KHÔNG ĐƯỢC chọn lại bất kỳ món ăn nào có id nằm trong danh sách đã cung cấp ở trên.**
 
 **Bước 4: Trả về kết quả.**
 - Trả về **CHỈ danh sách TÊN các món ăn** đã được lọc và sắp xếp.
-- Néu User CHỈ ĐỊNH YÊU CẦU MỘT MÓN CỤ THỂ, BẠN PHẢI TRẢ VỀ CHỈ MỘT MÓN ĂN.
+- Nếu User CHỈ ĐỊNH YÊU CẦU MỘT MÓN CỤ THỂ hoặc GẦN GIỐNG MỘT MÓN CỤ THỂ đó., BẠN PHẢI TRẢ VỀ CHỈ MỘT MÓN ĂN.
 - Mỗi món ăn trên một dòng. Không thêm số thứ tự, giải thích hay bất kỳ thông tin nào khác.
 """
         
@@ -142,19 +149,21 @@ def rerank_foods(state: Dict[str, Any]) -> Dict[str, Any]:
             
             # Parse kết quả từ LLM
             ranked_foods = parse_llm_rerank_response(llm_response, aggregated_foods)
+            # Lọc lại các món đã gợi ý trước đó
+            filtered_ranked_foods = [food for food in ranked_foods if food.get("dish_id") not in previous_food_ids]
             
-            print(f"DEBUG: After parsing, ranked_foods count: {len(ranked_foods)}")
-            if ranked_foods:
-                print(f"DEBUG: First few ranked foods: {[f.get('dish_name', 'Unknown') for f in ranked_foods[:3]]}")
+            print(f"DEBUG: After parsing, ranked_foods count: {len(filtered_ranked_foods)}")
+            if filtered_ranked_foods:
+                print(f"DEBUG: First few ranked foods: {[f.get('dish_name', 'Unknown') for f in filtered_ranked_foods[:3]]}")
             
-            if ranked_foods:
-                print(f"DEBUG: Successfully reranked {len(ranked_foods)} foods")
+            if filtered_ranked_foods:
+                print(f"DEBUG: Successfully reranked {len(filtered_ranked_foods)} foods")
                 
                 result = {
                     "status": "success",
-                    "message": f"Đã rerank và lọc {len(ranked_foods)} món ăn phù hợp",
-                    "ranked_foods": ranked_foods,
-                    "total_count": len(ranked_foods),
+                    "message": f"Đã rerank và lọc {len(filtered_ranked_foods)} món ăn phù hợp",
+                    "ranked_foods": filtered_ranked_foods,
+                    "total_count": len(filtered_ranked_foods),
                     "rerank_criteria": {
                         "bmi_category": bmi_category,
                         "medical_conditions": real_conditions,

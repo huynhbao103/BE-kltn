@@ -11,6 +11,8 @@ def query_neo4j_for_foods(state: Dict[str, Any]) -> Dict[str, Any]:
         selected_cooking_methods = state.get("selected_cooking_methods", [])
         bmi_result = state.get("bmi_result", {})
         medical_conditions = user_data.get("medicalConditions", [])
+        previous_food_ids = state.get("previous_food_ids", [])  # Lấy danh sách ID đã gợi ý
+        
         bmi_category = bmi_result.get("bmi_category", "") if bmi_result else ""
         real_conditions = []
         if medical_conditions:
@@ -35,7 +37,7 @@ def query_neo4j_for_foods(state: Dict[str, Any]) -> Dict[str, Any]:
         # 1. Lọc theo bệnh
         if has_conditions:
             for condition in real_conditions:
-                advanced_foods = GraphSchemaService.get_foods_by_disease_advanced(condition)
+                advanced_foods = GraphSchemaService.get_foods_by_disease_advanced(condition, excluded_ids=previous_food_ids)
                 print(f"[LỌC BỆNH] {condition}: {len(advanced_foods)} món đầu vào")
                 if advanced_foods:
                     all_foods[f"condition_{condition}"] = {"advanced": advanced_foods, "source": "medical_condition"}
@@ -45,7 +47,7 @@ def query_neo4j_for_foods(state: Dict[str, Any]) -> Dict[str, Any]:
                 print(f"[LỌC BỆNH] {condition}: {len(advanced_foods)} món sau lọc, ví dụ: {[f.get('dish_name','?') for f in advanced_foods[:3]]}")
         # 2. Lọc theo BMI
         if has_bmi:
-            bmi_foods = GraphSchemaService.get_foods_by_bmi(bmi_category.lower())
+            bmi_foods = GraphSchemaService.get_foods_by_bmi(bmi_category.lower(), excluded_ids=previous_food_ids)
             print(f"[LỌC BMI] {bmi_category}: {len(bmi_foods)} món đầu vào")
             if bmi_foods:
                 all_foods[f"bmi_{bmi_category}"] = {"advanced": bmi_foods, "source": "bmi"}
@@ -53,7 +55,7 @@ def query_neo4j_for_foods(state: Dict[str, Any]) -> Dict[str, Any]:
             print(f"[LỌC BMI] {bmi_category}: {len(bmi_foods)} món sau lọc, ví dụ: {[f.get('dish_name','?') for f in bmi_foods[:3]]}")
         # 3. Lọc theo cảm xúc
         if has_emotion:
-            emotion_foods = GraphSchemaService.get_foods_by_emotion(selected_emotion)
+            emotion_foods = GraphSchemaService.get_foods_by_emotion(selected_emotion, excluded_ids=previous_food_ids)
             print(f"[LỌC CẢM XÚC] {selected_emotion}: {len(emotion_foods)} món đầu vào")
             if emotion_foods:
                 all_foods[f"emotion_{selected_emotion}"] = {"advanced": emotion_foods, "source": "emotion"}
@@ -62,7 +64,7 @@ def query_neo4j_for_foods(state: Dict[str, Any]) -> Dict[str, Any]:
         # 4. Lọc theo phương pháp nấu
         if has_cooking_methods:
             for method in selected_cooking_methods:
-                method_foods = GraphSchemaService.get_foods_by_cooking_method(method)
+                method_foods = GraphSchemaService.get_foods_by_cooking_method(method, excluded_ids=previous_food_ids)
                 print(f"[LỌC PHƯƠNG PHÁP NẤU] {method}: {len(method_foods)} món đầu vào")
                 if method_foods:
                     all_foods[f"cooking_{method}"] = {"advanced": method_foods, "source": "cooking_method"}
@@ -71,7 +73,7 @@ def query_neo4j_for_foods(state: Dict[str, Any]) -> Dict[str, Any]:
         # Nếu không có tiêu chí nào, trả về món ăn phổ biến
         if not all_foods:
             print("[LỌC PHỔ BIẾN] Không có tiêu chí, trả về món phổ biến")
-            return query_popular_foods()
+            return query_popular_foods(excluded_ids=previous_food_ids)
         # 5. Lọc theo context (weather + time_of_day)
         weather = state.get("weather")
         time_of_day = state.get("time_of_day")
@@ -108,10 +110,10 @@ def query_neo4j_for_foods(state: Dict[str, Any]) -> Dict[str, Any]:
     except Exception as e:
         return {"query_result": {"status": "error", "message": str(e)}}
 
-def query_popular_foods(message="Đây là những món ăn phổ biến."):
+def query_popular_foods(message="Đây là những món ăn phổ biến.", excluded_ids: List[str] = None):
     """Truy vấn thực phẩm phổ biến."""
     try:
-        popular_foods = GraphSchemaService.get_popular_foods()
+        popular_foods = GraphSchemaService.get_popular_foods(excluded_ids=excluded_ids)
         result = {
             "status": "popular_foods",
             "message": message,

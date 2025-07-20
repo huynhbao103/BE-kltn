@@ -3,109 +3,116 @@ from typing import Dict, Any, List, Set
 
 def aggregate_suitable_foods(state: Dict[str, Any]) -> Dict[str, Any]:
     """
-    Node tổng hợp các món ăn phù hợp theo BMI, cách chế biến và bệnh
+    Node tổng hợp các món ăn từ kết quả của node query_neo4j.
+    Nó không thực hiện truy vấn mới mà chỉ xử lý dữ liệu đã có.
     """
     try:
+        neo4j_result = state.get("neo4j_result", {})
+        previous_food_ids = state.get("previous_food_ids", [])
+
+        print("DEBUG: neo4j_result foods keys:", list(neo4j_result.get("foods", {}).keys()))
+        print("DEBUG: previous_food_ids:", previous_food_ids)
+        for k, v in neo4j_result.get("foods", {}).items():
+            print(f"DEBUG: {k} - {len(v.get('advanced', []))} món")
+            for food in v.get('advanced', []):
+                if food.get('dish_id') in previous_food_ids:
+                    print("!!! FOUND DUPLICATE:", food.get('dish_name'), food.get('dish_id'))
+
+        if not neo4j_result or neo4j_result.get("status") == "error":
+            return {"aggregated_result": {"status": "error", "message": neo4j_result.get("message", "Lỗi từ bước truy vấn Neo4j.")}}
+
+        # Xử lý trường hợp fallback từ node trước (không tìm thấy món theo tiêu chí, trả về món phổ biến)
+        if neo4j_result.get("status") == "popular_foods":
+            print("DEBUG: [aggregate_foods] Processing popular foods from neo4j_result.")
+            popular_foods = neo4j_result.get("foods", {}).get("popular", {}).get("advanced", [])
+            # Lọc lại một lần nữa để đảm bảo không có món cũ
+            filtered_popular = [food for food in popular_foods if food.get('dish_id') not in previous_food_ids]
+            if not filtered_popular:
+                return {"aggregated_result": {
+                    "status": "empty",
+                    "message": "Không còn món ăn phù hợp nào khác để gợi ý.",
+                    "aggregated_foods": []
+                }}
+            return {"aggregated_result": {
+                "status": "success",
+                "message": f"Tìm thấy {len(filtered_popular)} món ăn phổ biến.",
+                "aggregated_foods": filtered_popular,
+                "criteria_used": {"source": "popular"}
+            }}
+
+        # Trích xuất các danh sách món ăn từ kết quả của Neo4j
+        foods_from_neo4j = neo4j_result.get("foods", {})
+        bmi_foods = []
+        cooking_foods = []
+        disease_foods = []
+
+        for key, value in foods_from_neo4j.items():
+            source = value.get("source")
+            foods = value.get("advanced", [])
+            if source == "bmi":
+                bmi_foods.extend(foods)
+            elif source == "cooking_method":
+                cooking_foods.extend(foods)
+            elif source == "medical_condition":
+                disease_foods.extend(foods)
+        
+        # Lấy lại các tiêu chí đã sử dụng để đưa vào hàm tổng hợp
         user_data = state.get("user_data", {})
         bmi_result = state.get("bmi_result", {})
         selected_cooking_methods = state.get("selected_cooking_methods", [])
         
-        # Lấy thông tin từ state
         bmi_category = bmi_result.get("bmi_category", "") if bmi_result else ""
         medical_conditions = user_data.get("medicalConditions", [])
         
-        print(f"DEBUG: Aggregating foods for:")
-        print(f"  - BMI: {bmi_category}")
-        print(f"  - Cooking methods: {selected_cooking_methods}")
-        print(f"  - Medical conditions: {medical_conditions}")
-        
-        # Kiểm tra có bệnh thực sự hay không
         real_conditions = []
         if medical_conditions:
             for condition in medical_conditions:
                 condition_lower = condition.lower().strip()
                 if condition_lower not in ["không có", "không bệnh", "không có bệnh", "bình thường", "khỏe mạnh"]:
                     real_conditions.append(condition)
-        
-        # Các danh sách món ăn theo từng tiêu chí
-        bmi_foods = []
-        cooking_foods = []
-        disease_foods = []
-        
-        # 1. Lấy món ăn theo BMI
-        if bmi_category and bmi_category.strip():
-            try:
-                print(f"DEBUG: Querying foods for BMI: {bmi_category}")
-                bmi_foods = GraphSchemaService.get_foods_by_bmi(bmi_category.lower())
-                print(f"DEBUG: Found {len(bmi_foods)} foods for BMI")
-            except Exception as e:
-                print(f"Error querying BMI foods: {e}")
-        
-        # 2. Lấy món ăn theo cách chế biến
-        if selected_cooking_methods and len(selected_cooking_methods) > 0:
-            for method in selected_cooking_methods:
-                try:
-                    print(f"DEBUG: Querying foods for cooking method: {method}")
-                    method_foods = GraphSchemaService.get_foods_by_cooking_method(method)
-                    print(f"DEBUG: Found {len(method_foods)} foods for method {method}")
-                    cooking_foods.extend(method_foods)
-                except Exception as e:
-                    print(f"Error querying cooking method foods: {e}")
-        
-        # 3. Lấy món ăn theo bệnh
-        if real_conditions:
-            for condition in real_conditions:
-                try:
-                    print(f"DEBUG: Querying foods for disease: {condition}")
-                    condition_foods = GraphSchemaService.get_foods_by_disease_advanced(condition)
-                    print(f"DEBUG: Found {len(condition_foods)} foods for disease {condition}")
-                    disease_foods.extend(condition_foods)
-                except Exception as e:
-                    print(f"Error querying disease foods: {e}")
-        
-        # Tổng hợp các món ăn
-        final_foods = aggregate_foods_by_intersection(bmi_foods, cooking_foods, disease_foods, 
-                                                     bmi_category, selected_cooking_methods, real_conditions)
+
+        # Tổng hợp các món ăn bằng logic giao/hợp
+        final_foods = aggregate_foods_by_intersection(
+            bmi_foods, cooking_foods, disease_foods, 
+            bmi_category, selected_cooking_methods, real_conditions,
+            previous_food_ids  # Truyền danh sách loại trừ vào hàm fallback
+        )
         
         print(f"DEBUG: Final aggregated foods count: {len(final_foods)}")
-        print(f"DEBUG: Final foods sample: {final_foods[:3] if final_foods else 'No foods'}")
-        
-        # Fallback: nếu không có món ăn phù hợp, trả về món ăn phổ biến
-        if not final_foods:
-            print("DEBUG: No foods after aggregation, using popular foods fallback")
-            try:
-                popular_foods = GraphSchemaService.get_popular_foods(limit=20)
-                final_foods = popular_foods
-            except Exception as e:
-                print(f"Error getting popular foods: {e}")
-                final_foods = []
-        
+
+        # Lọc lại một lần nữa để đảm bảo không có món cũ
+        filtered_final_foods = [food for food in final_foods if food.get('dish_id') not in previous_food_ids]
+        print("DEBUG: previous_food_ids:", previous_food_ids)
+        print("DEBUG: dish_ids in filtered_final_foods:", [food.get('dish_id') for food in filtered_final_foods])
+        for food in filtered_final_foods:
+            if food.get('dish_id') in previous_food_ids:
+                print("!!! STILL DUPLICATE IN FINAL:", food.get('dish_name'), food.get('dish_id'))
+                raise Exception(f"Duplicate dish_id found in final result: {food.get('dish_id')}")
+        if not filtered_final_foods:
+            return {"aggregated_result": {
+                "status": "empty",
+                "message": "Không còn món ăn phù hợp nào khác để gợi ý.",
+                "aggregated_foods": []
+            }}
+
         result = {
             "status": "success",
-            "message": f"Tìm thấy {len(final_foods)} món ăn phù hợp",
-            "aggregated_foods": final_foods,
-            "criteria_used": {
-                "bmi": bmi_category if bmi_category else None,
-                "cooking_methods": selected_cooking_methods,
-                "diseases": real_conditions
-            },
-            "food_counts": {
-                "bmi_foods": len(bmi_foods),
-                "cooking_foods": len(cooking_foods),
-                "disease_foods": len(disease_foods),
-                "final_foods": len(final_foods)
-            }
+            "message": f"Tìm thấy {len(filtered_final_foods)} món ăn phù hợp",
+            "aggregated_foods": filtered_final_foods,
+            "criteria_used": neo4j_result.get("conditions_checked", []) + neo4j_result.get("bmi_checked", []) + neo4j_result.get("cooking_methods_checked", [])
         }
         
-        # Trả về chỉ phần thay đổi của state theo quy tắc LangGraph
         return {"aggregated_result": result}
         
     except Exception as e:
+        import traceback
+        traceback.print_exc()
         return {"aggregated_result": {"status": "error", "message": str(e)}}
 
 def aggregate_foods_by_intersection(bmi_foods: List[Dict], cooking_foods: List[Dict], 
                                   disease_foods: List[Dict], bmi_category: str, 
-                                  cooking_methods: List[str], diseases: List[str]) -> List[Dict]:
+                                  cooking_methods: List[str], diseases: List[str],
+                                  excluded_ids: List[str] = None) -> List[Dict]:
     """
     Tổng hợp món ăn bằng cách lấy giao (intersection) của các tiêu chí
     """
@@ -175,7 +182,7 @@ def aggregate_foods_by_intersection(bmi_foods: List[Dict], cooking_foods: List[D
         # Không có tiêu chí nào: trả về món ăn phổ biến
         print("DEBUG: No criteria available, returning popular foods")
         try:
-            popular_foods = GraphSchemaService.get_popular_foods(limit=20)
+            popular_foods = GraphSchemaService.get_popular_foods(limit=20, excluded_ids=excluded_ids)
             return popular_foods
         except Exception as e:
             print(f"Error getting popular foods: {e}")

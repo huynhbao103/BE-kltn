@@ -1,23 +1,11 @@
 from fastapi import FastAPI
-from app.routes.classify_topic import router as classify_router
-from app.routes.langgraph_workflow import router as langgraph_router
-from fastapi.middleware.cors import CORSMiddleware
+from app.routes import classify_topic, langgraph_workflow
 
-app = FastAPI(
-    title="Nutrition Assistant API",
-    description="API cho hệ thống tư vấn dinh dưỡng với LangGraph workflow",
-    version="1.0.0"
-)
+app = FastAPI()
 
-# CORS để gọi từ frontend
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["*"],
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
+app.include_router(classify_topic.router, prefix="/api/classify", tags=["Classification"])
+app.include_router(langgraph_workflow.router, prefix="/api/langgraph", tags=["LangGraph Workflow"])
 
-# Đăng ký router
-app.include_router(classify_router, prefix="/api", tags=["Classification"])
-app.include_router(langgraph_router, prefix="/api/langgraph", tags=["Workflow"])
+@app.get("/")
+def read_root():
+    return {"message": "Welcome to the Nutrition Assistant API"}

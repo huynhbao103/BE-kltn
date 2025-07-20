@@ -212,6 +212,35 @@ class GraphSchemaService:
             return [record["cook_method"] for record in result]
     
     @staticmethod
+    def get_all_cooking_methods():
+        """Lấy tất cả các phương pháp nấu ăn có trong DB."""
+        query = "MATCH (cm:CookMethod) RETURN DISTINCT cm.name AS cook_method ORDER BY cook_method"
+        with driver.session() as session:
+            result = session.run(query)
+            return [record["cook_method"] for record in result]
+
+    @staticmethod
+    def get_all_relationship_types():
+        """Lấy tất cả các loại relationship có trong DB để debug."""
+        query = "CALL db.relationshipTypes()"
+        with driver.session() as session:
+            result = session.run(query)
+            return [record["relationshipType"] for record in result]
+
+    @staticmethod
+    def get_cook_methods_by_bmi(bmi_category: str):
+        """Lấy các phương pháp nấu ăn phù hợp cho một phân loại BMI."""
+        # Giả định rằng món ăn phù hợp với BMI thì cách chế biến của nó cũng phù hợp.
+        query = """
+        MATCH (bmi:BMI) WHERE toLower(bmi.name) = toLower($bmi_category)
+        MATCH (bmi)<-[:PHÙ_HỢP_VỚI_BMI]-(dish:Dish)-[:ĐƯỢC_DÙNG_TRONG]->(cm:CookMethod)
+        RETURN DISTINCT cm.name AS cook_method
+        """
+        with driver.session() as session:
+            result = session.run(query, bmi_category=bmi_category)
+            return [record["cook_method"] for record in result]
+
+    @staticmethod
     def get_diet_recommendations_by_disease(disease_name: str):
         """Lấy khuyến nghị chế độ ăn cho bệnh"""
         query = """
@@ -222,6 +251,21 @@ class GraphSchemaService:
         with driver.session() as session:
             result = session.run(query, disease=disease_name)
             return [record["diet_name"] for record in result]
+
+    @staticmethod
+    def get_diet_details_by_name(diet_name: str):
+        """Lấy chi tiết (tên, mô tả) của một chế độ ăn."""
+        query = """
+        MATCH (d:Diet {name: $diet_name})
+        RETURN d.name AS name, d.description AS description
+        LIMIT 1
+        """
+        with driver.session() as session:
+            from neo4j.graph import Node
+            record = session.run(query, diet_name=diet_name).single()
+            if record and isinstance(record["name"], Node):
+                 return record["name"]._properties
+            return record.data() if record else None
     
     @staticmethod
     def get_food_network_analysis():
@@ -266,16 +310,9 @@ class GraphSchemaService:
     def get_foods_by_cooking_method(cooking_method: str, excluded_ids: List[str] = None):
         """Truy vấn thực phẩm theo phương pháp nấu (không phân biệt hoa thường)"""
         params = {"cooking_method": cooking_method}
-        # Thử nhiều relationship types khác nhau
         query = """
-        MATCH (cm:CookMethod)
+        MATCH (dish:Dish)-[:ĐƯỢC_DÙNG_TRONG]->(cm:CookMethod)
         WHERE toLower(cm.name) = toLower($cooking_method)
-        OPTIONAL MATCH (cm)-[:ĐƯỢC_DÙNG_TRONG]->(dish1:Dish)
-        OPTIONAL MATCH (cm)-[:ĐƯỢC_CHẾ_BIẾN_BẰNG]->(dish2:Dish)
-        OPTIONAL MATCH (dish3:Dish)-[:ĐƯỢC_CHẾ_BIẾN_BẰNG]->(cm)
-        WITH cm, 
-             COALESCE(dish1, dish2, dish3) AS dish
-        WHERE dish IS NOT NULL
         """
         if excluded_ids:
             query += " AND NOT dish.id IN $excluded_ids "
@@ -367,27 +404,30 @@ class GraphSchemaService:
         """
         Lấy context phù hợp từ weather + time_of_day, sau đó lấy danh sách cách chế biến (CookMethod) phù hợp với context đó.
         """
-        # Query context
-        context_result = GraphSchemaService.run_custom_query(
-            """
-            MATCH (w:Weather {name: $weather})<-[:THUỘC_THỜI_TIẾT]-(ctx:Context)-[:THUỘC_THỜI_ĐIỂM]->(t:TimeOfDay {name: $time_of_day})
+        # Cập nhật dựa trên cấu trúc DB thực tế của bạn
+        params = {"weather": weather, "time_of_day": time_of_day}
+        
+        # Bước 1: Tìm node Context
+        context_query = """
+            MATCH (w:Weather) WHERE toLower(trim(w.name)) = toLower(trim($weather))
+            MATCH (t:TimeOfDay) WHERE toLower(trim(t.name)) = toLower(trim($time_of_day))
+            MATCH (w)-[:MÔ_TẢ]->(ctx:Context)<-[:THỜI_ĐIỂM]-(t)
             RETURN ctx.name AS context_name
-            """,
-            {"weather": weather, "time_of_day": time_of_day}
-        )
+            LIMIT 1
+        """
+        context_result = GraphSchemaService.run_custom_query(context_query, params)
         context_name = context_result[0]["context_name"] if context_result else None
 
-        # Query cook methods
+        # Bước 2: Từ Context, tìm các CookMethod phù hợp
         suggested_cook_methods = []
         if context_name:
-            cook_method_result = GraphSchemaService.run_custom_query(
-                """
-                MATCH (ctx:Context {name: $context_name})-[:PHÙ_HỢP_CHẾ_BIẾN_BẰNG]->(cm:CookMethod)
+            cook_method_query = """
+                MATCH (ctx:Context {name: $context_name})-[:PHÙ_HỢP_CHẾ_BIẾNG_BẰNG]->(cm:CookMethod)
                 RETURN cm.name AS cook_method
-                """,
-                {"context_name": context_name}
-            )
+            """
+            cook_method_result = GraphSchemaService.run_custom_query(cook_method_query, {"context_name": context_name})
             suggested_cook_methods = [d["cook_method"] for d in cook_method_result]
+            
         return context_name, suggested_cook_methods
     
     @staticmethod

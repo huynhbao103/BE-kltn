@@ -46,15 +46,39 @@ def aggregate_suitable_foods(state: Dict[str, Any]) -> Dict[str, Any]:
                 cooking_foods.extend(foods)
             elif source == "medical_condition":
                 disease_foods.extend(foods)
-        
+
         # Lấy lại các tiêu chí đã sử dụng để đưa vào hàm tổng hợp
         user_data = state.get("user_data", {})
         bmi_result = state.get("bmi_result", {})
         selected_cooking_methods = state.get("selected_cooking_methods", [])
-        
+
+        # Nếu selected_cooking_methods là None, trả về tất cả các món (trừ previous_food_ids)
+        if selected_cooking_methods is None:
+            all_foods = []
+            for key, value in foods_from_neo4j.items():
+                foods = value.get("advanced", [])
+                all_foods.extend(foods)
+            filtered_final_foods = [
+                food for food in all_foods
+                if food.get('dish_id') not in previous_food_ids and food.get('id') not in previous_food_ids
+            ]
+            if not filtered_final_foods:
+                return {"aggregated_result": {
+                    "status": "empty",
+                    "message": "Không còn món ăn phù hợp nào khác để gợi ý.",
+                    "aggregated_foods": []
+                }}
+            result = {
+                "status": "success",
+                "message": f"Tìm thấy {len(filtered_final_foods)} món ăn phù hợp",
+                "aggregated_foods": filtered_final_foods,
+                "criteria_used": ["all"]
+            }
+            return {"aggregated_result": result}
+
         bmi_category = bmi_result.get("bmi_category", "") if bmi_result else ""
         medical_conditions = user_data.get("medicalConditions", [])
-        
+
         real_conditions = []
         if medical_conditions:
             for condition in medical_conditions:
@@ -68,9 +92,12 @@ def aggregate_suitable_foods(state: Dict[str, Any]) -> Dict[str, Any]:
             bmi_category, selected_cooking_methods, real_conditions,
             previous_food_ids  # Truyền danh sách loại trừ vào hàm fallback
         )
-        
+
         # Lọc lại một lần nữa để đảm bảo không có món cũ
-        filtered_final_foods = [food for food in final_foods if food.get('dish_id') not in previous_food_ids]
+        filtered_final_foods = [
+            food for food in final_foods
+            if food.get('dish_id') not in previous_food_ids and food.get('id') not in previous_food_ids
+        ]
 
         if not filtered_final_foods:
             return {"aggregated_result": {
@@ -85,7 +112,7 @@ def aggregate_suitable_foods(state: Dict[str, Any]) -> Dict[str, Any]:
             "aggregated_foods": filtered_final_foods,
             "criteria_used": neo4j_result.get("conditions_checked", []) + neo4j_result.get("bmi_checked", []) + neo4j_result.get("cooking_methods_checked", [])
         }
-        
+
         return {"aggregated_result": result}
         
     except Exception as e:
@@ -147,7 +174,7 @@ def aggregate_foods_by_intersection(bmi_foods: List[Dict], cooking_foods: List[D
     else:
         # Không có tiêu chí nào: trả về món ăn phổ biến
         try:
-            popular_foods = GraphSchemaService.get_popular_foods(limit=20, excluded_ids=excluded_ids)
+            popular_foods = GraphSchemaService.get_popular_foods(excluded_ids=excluded_ids)
             return popular_foods
         except Exception as e:
             return []

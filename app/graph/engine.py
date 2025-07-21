@@ -7,6 +7,7 @@ from app.graph.nodes.aggregate_suitable_foods_node import aggregate_suitable_foo
 from app.graph.nodes.rerank_foods_node import rerank_foods
 # from app.graph.nodes.llm_check_food_suitability_node import check_food_suitability
 from app.graph.nodes.fallback_query_node import create_fallback_query
+from app.graph.nodes.process_cooking_request_node import process_cooking_request
 from app.services.mongo_service import mongo_service
 import jwt
 import os
@@ -37,6 +38,8 @@ class WorkflowState(TypedDict):
     time_of_day: str
     previous_food_ids: Optional[List[str]]
     analysis_steps: Optional[List[Dict[str, str]]]
+    analysis_shown: Optional[bool]
+    cooking_request_warning: Optional[str]
 
 # Node kiểm tra session đầu workflow
 
@@ -132,7 +135,7 @@ def analyze_and_generate_prompts(state: WorkflowState) -> WorkflowState:
         }
         
         # Lưu state và dừng lại
-        current_state = {**state, "analysis_steps": analysis_steps, "cooking_method_prompt": cooking_method_prompt}
+        current_state = {**state, "analysis_steps": analysis_steps, "cooking_method_prompt": cooking_method_prompt, "analysis_shown": False}
         session_id = save_state_to_redis(current_state)
         current_state["session_id"] = session_id # Cập nhật lại session_id vào state
 
@@ -372,6 +375,11 @@ def generate_final_result(state: WorkflowState) -> WorkflowState:
         medical_conditions = user_data.get("medicalConditions", [])
         final_foods = []
         newly_suggested_food_ids = []
+        
+        # Thêm warning message nếu có cooking request
+        cooking_request_warning = state.get("cooking_request_warning")
+        if cooking_request_warning:
+            message_parts.append(f"💡 Lưu ý: {cooking_request_warning}")
 
         if rerank_result and rerank_result.get("status") == "success":
             ranked_foods = rerank_result.get("ranked_foods", [])
@@ -404,16 +412,14 @@ def generate_final_result(state: WorkflowState) -> WorkflowState:
                     pass # Tạm thời vô hiệu hóa log
 
             if final_foods:
-                food_names = [food.get("name", "Unknown") for food in final_foods[:5]]
-                if len(final_foods) > 5:
-                    food_names = [food.get("name", "Unknown") for food in final_foods]
-                message_parts.append(f"Danh sách món ăn phù hợp: {', '.join(food_names)}")
-                message_parts.append(f"Tổng cộng: {total_count} món ăn")
+                food_names = [food.get("name", "Unknown") for food in final_foods]
+                message_parts.append(f"Đây là những món ăn phù hợp với yêu cầu của bạn: {', '.join(food_names)}")
+                message_parts.append(f"Tổng cộng có {total_count} món ăn để bạn lựa chọn")
             else:
                 if previous_food_ids:
-                    message_parts.append("Chúng tôi đã gợi ý hết các món ăn phù hợp với yêu cầu của bạn.")
+                    message_parts.append("Chúng tôi đã gợi ý hết các món ăn phù hợp với yêu cầu của bạn rồi.")
                 else:
-                    message_parts.append(" Chúng tôi không có món ăn phù hợp với các tiêu chí của bạn")
+                    message_parts.append("Xin lỗi, chúng tôi không tìm thấy món ăn nào phù hợp với yêu cầu của bạn")
 
         detailed_message = " | ".join(message_parts)
 
@@ -435,14 +441,47 @@ def generate_final_result(state: WorkflowState) -> WorkflowState:
             "session_id": session_id
         }
 
-        previous_food_ids = state.get("previous_food_ids", [])
-        newly_suggested_food_ids = [food.get("id") or food.get("dish_id") for food in final_foods if food.get("id") or food.get("dish_id")]
-        updated_previous_food_ids = list(set(previous_food_ids + newly_suggested_food_ids))
+        previous_food_ids = set(state.get("previous_food_ids", []))
+        previous_food_names = set(state.get("previous_food_names", []))
+        # Lọc lại final_foods để không trùng id, dish_id hoặc name
+        filtered_final_foods = []
+        for food in final_foods:
+            food_id = food.get("id")
+            dish_id = food.get("dish_id")
+            name = food.get("name")
+            if (
+                (food_id and food_id in previous_food_ids) or
+                (dish_id and dish_id in previous_food_ids) or
+                (name and name in previous_food_names)
+            ):
+                continue
+            filtered_final_foods.append(food)
+        # Cập nhật previous_food_ids và previous_food_names
+        newly_suggested_food_ids = []
+        newly_suggested_food_names = []
+        for food in filtered_final_foods:
+            if food.get("id"):
+                newly_suggested_food_ids.append(food.get("id"))
+            if food.get("dish_id"):
+                newly_suggested_food_ids.append(food.get("dish_id"))
+            if food.get("name"):
+                newly_suggested_food_names.append(food.get("name"))
+        updated_previous_food_ids = list(previous_food_ids.union(newly_suggested_food_ids))
+        updated_previous_food_names = list(previous_food_names.union(newly_suggested_food_names))
+        # DEBUG: Log các id và tên đã gợi ý
+        print("[DEBUG] previous_food_ids:", previous_food_ids)
+        print("[DEBUG] previous_food_names:", previous_food_names)
+        print("[DEBUG] newly_suggested_food_ids:", newly_suggested_food_ids)
+        print("[DEBUG] newly_suggested_food_names:", newly_suggested_food_names)
+        print("[DEBUG] updated_previous_food_ids:", updated_previous_food_ids)
+        print("[DEBUG] updated_previous_food_names:", updated_previous_food_names)
+        print("[DEBUG] ids các món trả về:", [food.get("id") or food.get("dish_id") for food in filtered_final_foods])
+        print("[DEBUG] names các món trả về:", [food.get("name") for food in filtered_final_foods])
 
         # Lưu lại state mới vào Redis để đảm bảo loại trừ món đã gợi ý
         if session_id:
             try:
-                save_state_to_redis({**state, "previous_food_ids": updated_previous_food_ids}, session_id)
+                save_state_to_redis({**state, "previous_food_ids": updated_previous_food_ids, "previous_food_names": updated_previous_food_names}, session_id)
             except Exception as e:
                 # Log lỗi ra console phía server, không trả về cho client
                 print(f"ERROR: [generate_final_result] Failed to save updated previous_food_ids to Redis: {e}")
@@ -451,6 +490,7 @@ def generate_final_result(state: WorkflowState) -> WorkflowState:
             **state,
             "final_result": final_result,
             "previous_food_ids": updated_previous_food_ids,
+            "previous_food_names": updated_previous_food_names,
             "step": "result_generated"
         }
     except Exception as e:
@@ -470,20 +510,29 @@ def should_continue(state: WorkflowState) -> str:
     elif step in ["session_not_found", "session_error"]:
         # Nếu không có session, bắt đầu luồng mới bằng cách xác định người dùng
         return "identify_user"
+
     elif step == "session_complete":
         # Session có đủ thông tin, đi thẳng đến tính toán
         return "query_neo4j"
     elif step == "user_identified":
         return "classify_topic"
     elif step == "topic_classified":
-        # Sau khi phân loại chủ đề, nếu hợp lệ thì yêu cầu nhập liệu
-        if state.get("topic_classification") == "không liên quan":
+        # Sau khi phân loại chủ đề, kiểm tra loại yêu cầu
+        topic_classification = state.get("topic_classification")
+        if topic_classification == "không liên quan":
             return "end_rejected"
-        return "calculate_bmi" # Chuyển đến tính BMI sau khi phân loại
+        elif topic_classification == "cooking_request":
+            return "process_cooking_request" # Xử lý yêu cầu cooking method
+        else:
+            return "calculate_bmi" # Chuyển đến tính BMI cho yêu cầu tư vấn chung
     elif step == "bmi_calculated":
          return "analyze_and_generate_prompts" # Chuyển đến phân tích sau khi tính BMI
     elif step == "analysis_complete":
         return "end_success" # Dừng lại sau khi phân tích
+
+    elif step == "cooking_request_processed":
+        # Sau khi xử lý cooking request, đi thẳng đến query neo4j
+        return "query_neo4j"
     elif step == "cooking_method_selected":
         # Step này chỉ được gọi khi FE gửi lên cả emotion và cooking method
         return "query_neo4j"
@@ -524,8 +573,8 @@ def end_rejected(state: WorkflowState) -> WorkflowState:
     user_height = user_data.get("height", "N/A")
     medical_conditions = user_data.get("medicalConditions", [])
     
-    message_parts = [f"Câu hỏi không thuộc chủ đề dinh dưỡng"]
-    message_parts.append(f"Thông tin: {user_name}, {user_age} tuổi, {user_weight}kg, {user_height}cm")
+    message_parts = [f"Xin lỗi, câu hỏi này không thuộc chủ đề dinh dưỡng mà tôi có thể tư vấn"]
+    message_parts.append(f"Thông tin của bạn: {user_name}, {user_age} tuổi, {user_weight}kg, {user_height}cm")
     
     # Thêm thông tin bệnh nếu có
     if medical_conditions and medical_conditions != ["Không có"]:
@@ -551,6 +600,7 @@ def end_rejected(state: WorkflowState) -> WorkflowState:
             "session_id": session_id
         }
     }
+
 
 def end_success(state: WorkflowState) -> WorkflowState:
     """
@@ -583,6 +633,7 @@ def create_workflow() -> StateGraph:
     workflow.add_node("classify_topic", classify_topic)
     workflow.add_node("calculate_bmi", calculate_bmi)
     workflow.add_node("analyze_and_generate_prompts", analyze_and_generate_prompts) # Thêm node mới
+    workflow.add_node("process_cooking_request", process_cooking_request) # Thêm node xử lý cooking request
     workflow.add_node("query_neo4j", query_neo4j)
     workflow.add_node("aggregate_foods", aggregate_foods)
     workflow.add_node("rerank_foods", rerank_foods_wrapper)
@@ -612,7 +663,7 @@ def create_workflow() -> StateGraph:
         "classify_topic",
         should_continue,
         {
-           
+            "process_cooking_request": "process_cooking_request",
             "calculate_bmi": "calculate_bmi", # Sửa luồng
             "end_rejected": "end_rejected"
         }
@@ -633,6 +684,17 @@ def create_workflow() -> StateGraph:
         should_continue,
         {
             "end_success": "end_success",
+            "end_with_error": "end_with_error"
+        }
+    )
+
+
+
+    workflow.add_conditional_edges(
+        "process_cooking_request", # Thêm điều kiện cho node xử lý cooking request
+        should_continue,
+        {
+            "query_neo4j": "query_neo4j",
             "end_with_error": "end_with_error"
         }
     )
@@ -702,7 +764,9 @@ def run_langgraph_workflow_until_selection(user_id: str, question: str, weather:
             "cooking_method_prompt": None,
             "selected_cooking_methods": None,
             "previous_food_ids": [],
-            "analysis_steps": []
+            "analysis_steps": [],
+            "analysis_shown": False,
+            "cooking_request_warning": None
         }
 
         if session_id:
@@ -745,7 +809,7 @@ def continue_workflow_with_cooking_method(session_id: str, cooking_methods: List
         
         # Xóa các prompt cũ để tránh nhầm lẫn
         state.pop("cooking_method_prompt", None)
-        state.pop("analysis_steps", None)
+        # Giữ lại analysis_steps để tham khảo
 
         # Gọi invoke để tiếp tục workflow
         result = workflow_graph.invoke(state)

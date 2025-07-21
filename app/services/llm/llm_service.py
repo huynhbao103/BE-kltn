@@ -8,7 +8,7 @@ class LLMService:
     """
     
     @staticmethod
-    def get_completion(prompt: str, model: str = "gpt-3.5-turbo") -> str:
+    def get_completion(prompt: str, model: str = "gpt-4o") -> str:
         """
         Gọi LLM API để lấy completion
         """
@@ -32,7 +32,7 @@ class LLMService:
                     {"role": "user", "content": prompt}
                 ],
                 "max_tokens": 2000,
-                "temperature": 0.7
+                "temperature": 0.1
             }
             
             response = requests.post(

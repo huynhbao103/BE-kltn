@@ -124,7 +124,7 @@ class GraphSchemaService:
             query = f"""
             MATCH (n:{label})
             RETURN n
-            LIMIT 300
+            
             """
             with driver.session() as session:
                 result = session.run(query)
@@ -413,7 +413,7 @@ class GraphSchemaService:
             MATCH (t:TimeOfDay) WHERE toLower(trim(t.name)) = toLower(trim($time_of_day))
             MATCH (w)-[:MÔ_TẢ]->(ctx:Context)<-[:THỜI_ĐIỂM]-(t)
             RETURN ctx.name AS context_name
-            LIMIT 1
+            
         """
         context_result = GraphSchemaService.run_custom_query(context_query, params)
         context_name = context_result[0]["context_name"] if context_result else None
@@ -442,7 +442,7 @@ class GraphSchemaService:
         query += """
         RETURN dish.name as dish_name, dish.id as dish_id, dish.description as description
         ORDER BY dish.popularity_score DESC 
-        LIMIT 20
+        
         """
         with driver.session() as session:
             result = session.run(query, **params)

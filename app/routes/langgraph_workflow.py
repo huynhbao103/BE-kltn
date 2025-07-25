@@ -15,11 +15,11 @@ class WorkflowInput(BaseModel):
     weather: str
     time_of_day: str
     session_id: Optional[str] = None
+    ignore_context_filter: bool = False
 
 class CookingMethodInput(BaseModel):
     session_id: str
     cooking_methods: List[str]
-
 def get_user_id_from_token(authorization: Optional[str] = Header(None)) -> str:
     """
     Lấy user_id từ JWT token trong Authorization header
@@ -76,7 +76,7 @@ def process_with_langgraph(
     try:
         # Chạy workflow từ đầu để lấy phân tích và prompts
         result = run_langgraph_workflow_until_selection(
-            user_id, data.question, data.weather, data.time_of_day, data.session_id
+            user_id, data.question, data.weather, data.time_of_day, data.session_id, data.ignore_context_filter
         )
         return result
     except Exception as e:

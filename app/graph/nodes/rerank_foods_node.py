@@ -95,10 +95,10 @@ def rerank_foods(state: Dict[str, Any]) -> Dict[str, Any]:
 
 **Bước 1: Xác định quy tắc lọc món ăn từ câu hỏi của người dùng.**
 - **QUAN TRỌNG:** Nếu câu hỏi KHÔNG chứa bất kỳ từ khóa nào về loại món ăn (như \"chay\", \"mặn\", \"tráng miệng\", \"đồ ăn vặt\", v.v.), bạn phải **GIỮ LẠI TOÀN BỘ DANH SÁCH MÓN ĂN** và chuyển thẳng đến Bước 3 để rerank.
-- Nếu câu hỏi yêu cầu **\"món chay\"**:
+- Nếu câu hỏi yêu cầu có liên quan đến **\"món chay\"**:
   - Quy tắc là **CHỈ GIỮ LẠI MÓN CHAY**.
   - Bạn PHẢI loại bỏ TẤT CẢ các món có chứa thịt, cá, hải sản, trứng và các sản phẩm từ động vật.
-- Nếu câu hỏi yêu cầu một loại cụ thể khác (ví dụ: \"tráng miệng\", \"món chính\", \"khai vị\", \"soup\", \"salad\"):
+- Nếu câu hỏi yêu cầu một loại cụ thể khác (ví dụ: \"tráng miệng\", \"món chính\", \"khai vị\", \"soup\", \"salad\",etc...):
   - Quy tắc là **CHỈ GIỮ LẠI CÁC MÓN THUỘC LOẠI ĐÓ**.
   - Bạn cần tự suy luận dựa vào tên món ăn để phân loại.
 
@@ -110,11 +110,11 @@ def rerank_foods(state: Dict[str, Any]) -> Dict[str, Any]:
 - Sắp xếp các món ăn trong danh sách đã lọc theo thứ tự phù hợp nhất với người dùng, dựa trên các tiêu chí sau (ưu tiên từ trên xuống dưới):
   1.  **Sự phù hợp với yêu cầu trong câu hỏi** (nếu có yêu cầu đặc biệt khác ngoài loại món ăn).
   2.  **Sức khỏe:** Phù hợp với tình trạng bệnh ({conditions_text}).
-  3.  **Sở thích:** Phù hợp với cách chế biến ưa thích ({cooking_text}).
-  4.  **Cảm xúc:** Phù hợp với cảm xúc hiện tại ({selected_emotion}).
-  5.  Mức độ phổ biến và cân bằng dinh dưỡng.
+  3.  **Sở thích:** Phù hợp với cách chế biến ({cooking_text}).
+  4.  Mức độ phổ biến và cân bằng dinh dưỡng.
 - **Loại bỏ** những món không thực sự phù hợp với các tiêu chí trên.
-- **TUYỆT ĐỐI KHÔNG ĐƯỢC chọn lại bất kỳ món ăn nào có id nằm trong danh sách đã cung cấp ở trên.**
+- **TUYỆT ĐỐI KHÔNG ĐƯỢC chọn lại bất kỳ món ăn nào có id nằm trong danh sách đã cung cấp ở trên. TRỪ khi câu hỏi yêu cầu chọn lại món đã gợi ý trước đó.**
+
 
 **Bước 4: Trả về kết quả.**
 - Trả về **CHỈ danh sách TÊN các món ăn** đã được lọc và sắp xếp.

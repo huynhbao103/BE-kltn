@@ -3,8 +3,9 @@ langgraph
 langchain
 neo4j
 python-dotenv
+uvicorn[standard]
 fastapi
 pymongo
 PyJWT
 redis
-uvicorn[standard]
+

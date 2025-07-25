@@ -52,6 +52,16 @@ def aggregate_suitable_foods(state: Dict[str, Any]) -> Dict[str, Any]:
         bmi_result = state.get("bmi_result", {})
         selected_cooking_methods = state.get("selected_cooking_methods", [])
 
+        # Thêm khai báo biến bmi_category và real_conditions
+        bmi_category = bmi_result.get("bmi_category", "") if bmi_result else ""
+        medical_conditions = user_data.get("medicalConditions", [])
+        real_conditions = []
+        if medical_conditions:
+            for condition in medical_conditions:
+                condition_lower = condition.lower().strip()
+                if condition_lower not in ["không có", "không bệnh", "không có bệnh", "bình thường", "khỏe mạnh"]:
+                    real_conditions.append(condition)
+
         # Nếu selected_cooking_methods là None, trả về tất cả các món (trừ previous_food_ids)
         if selected_cooking_methods is None:
             all_foods = []
@@ -76,44 +86,69 @@ def aggregate_suitable_foods(state: Dict[str, Any]) -> Dict[str, Any]:
             }
             return {"aggregated_result": result}
 
-        bmi_category = bmi_result.get("bmi_category", "") if bmi_result else ""
-        medical_conditions = user_data.get("medicalConditions", [])
+        # Nếu user đã chỉ định phương pháp nấu, chỉ trả về món đúng phương pháp, không trả về món phương pháp khác
+        # Fallback sẽ bỏ lần lượt context, rồi BMI, rồi bệnh nếu không có món phù hợp
+        # 1. Lọc giao cả 3 tiêu chí (bệnh, BMI, phương pháp) + giữ đúng phương pháp nấu
+        def filter_by_cooking_and_diet(foods, methods, diet=None):
+            # Lọc đúng phương pháp nấu, nếu có diet thì lọc thêm diet
+            result = [food for food in foods if food.get('cook_method') in methods]
+            if diet:
+                result = [food for food in result if food.get('diet_name', '').lower() == diet.lower()]
+            return result
 
-        real_conditions = []
-        if medical_conditions:
-            for condition in medical_conditions:
-                condition_lower = condition.lower().strip()
-                if condition_lower not in ["không có", "không bệnh", "không có bệnh", "bình thường", "khỏe mạnh"]:
-                    real_conditions.append(condition)
+        # Lấy diet nếu user hỏi món chay, món nước chay, xào chay, ...
+        user_question = state.get('question', '').lower()
+        diet_filter = None
+        if 'chay' in user_question:
+            diet_filter = 'chay'
+        # Có thể mở rộng thêm các chế độ ăn khác nếu cần
 
-        # Tổng hợp các món ăn bằng logic giao/hợp
-        final_foods = aggregate_foods_by_intersection(
+        # 1. Giao cả 3 tiêu chí
+        foods_intersection = aggregate_foods_by_intersection(
             bmi_foods, cooking_foods, disease_foods, 
             bmi_category, selected_cooking_methods, real_conditions,
-            previous_food_ids  # Truyền danh sách loại trừ vào hàm fallback
+            previous_food_ids
         )
-
-        # Lọc lại một lần nữa để đảm bảo không có món cũ
-        filtered_final_foods = [
-            food for food in final_foods
-            if food.get('dish_id') not in previous_food_ids and food.get('id') not in previous_food_ids
-        ]
-
-        if not filtered_final_foods:
-            return {"aggregated_result": {
-                "status": "empty",
-                "message": "Không còn món ăn phù hợp nào khác để gợi ý.",
-                "aggregated_foods": []
-            }}
-
-        result = {
-            "status": "success",
-            "message": f"Tìm thấy {len(filtered_final_foods)} món ăn phù hợp",
-            "aggregated_foods": filtered_final_foods,
-            "criteria_used": neo4j_result.get("conditions_checked", []) + neo4j_result.get("bmi_checked", []) + neo4j_result.get("cooking_methods_checked", [])
-        }
-
-        return {"aggregated_result": result}
+        filtered_final_foods = filter_by_cooking_and_diet(foods_intersection, selected_cooking_methods, diet_filter)
+        if filtered_final_foods:
+            result = {
+                "status": "success",
+                "message": f"Tìm thấy {len(filtered_final_foods)} món ăn phù hợp",
+                "aggregated_foods": filtered_final_foods,
+                "criteria_used": neo4j_result.get("conditions_checked", []) + neo4j_result.get("bmi_checked", []) + neo4j_result.get("cooking_methods_checked", [])
+            }
+            return {"aggregated_result": result}
+        # 2. Bỏ context (chỉ lấy giao BMI, bệnh, phương pháp)
+        # (Ở đây context đã được áp dụng ở bước truy vấn, nên không cần bỏ thêm)
+        # 3. Bỏ BMI (chỉ lấy giao bệnh và phương pháp)
+        foods_no_bmi = aggregate_foods_by_intersection(
+            [], cooking_foods, disease_foods, '', selected_cooking_methods, real_conditions, previous_food_ids
+        )
+        filtered_no_bmi = filter_by_cooking_and_diet(foods_no_bmi, selected_cooking_methods, diet_filter)
+        if filtered_no_bmi:
+            result = {
+                "status": "success",
+                "message": f"Tìm thấy {len(filtered_no_bmi)} món ăn phù hợp (bỏ lọc BMI)",
+                "aggregated_foods": filtered_no_bmi,
+                "criteria_used": neo4j_result.get("conditions_checked", []) + neo4j_result.get("cooking_methods_checked", [])
+            }
+            return {"aggregated_result": result}
+        # 4. Bỏ luôn cả BMI và bệnh (chỉ lấy theo phương pháp)
+        filtered_cooking_only = filter_by_cooking_and_diet(cooking_foods, selected_cooking_methods, diet_filter)
+        if filtered_cooking_only:
+            result = {
+                "status": "success",
+                "message": f"Tìm thấy {len(filtered_cooking_only)} món ăn phù hợp (chỉ theo phương pháp nấu)",
+                "aggregated_foods": filtered_cooking_only,
+                "criteria_used": neo4j_result.get("cooking_methods_checked", [])
+            }
+            return {"aggregated_result": result}
+        # 5. Nếu vẫn không có, trả về empty, không fallback sang phương pháp khác
+        return {"aggregated_result": {
+            "status": "empty",
+            "message": "Không có món ăn nào phù hợp với yêu cầu của bạn.",
+            "aggregated_foods": []
+        }}
         
     except Exception as e:
         import traceback

@@ -440,9 +440,10 @@ class GraphSchemaService:
             params["excluded_ids"] = excluded_ids
         
         query += """
-        RETURN dish.name as dish_name, dish.id as dish_id, dish.description as description
-        ORDER BY dish.popularity_score DESC 
-        
+          MATCH (dish:Dish)
+          RETURN dish.name as dish_name, dish.id as dish_id, dish.description as description
+          ORDER BY dish.name
+          
         """
         with driver.session() as session:
             result = session.run(query, **params)

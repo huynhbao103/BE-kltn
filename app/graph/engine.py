@@ -40,6 +40,8 @@ class WorkflowState(TypedDict):
     analysis_steps: Optional[List[Dict[str, str]]]
     analysis_shown: Optional[bool]
     cooking_request_warning: Optional[str]
+    context_analysis_shown: Optional[bool]
+    ignore_context_filter: Optional[bool]
 
 # Node kiểm tra session đầu workflow
 
@@ -71,73 +73,70 @@ def analyze_and_generate_prompts(state: WorkflowState) -> WorkflowState:
         # Bước 1: Lọc Cách chế biến theo Bệnh
         medical_conditions = [c for c in user_data.get("medicalConditions", []) if c not in ["Không có", "Bình thường"]]
         cooking_methods_after_disease_filter = set()
-        
         if medical_conditions:
             for condition in medical_conditions:
                 diet_recs = GraphSchemaService.get_diet_recommendations_by_disease(condition)
                 diet_details_msg = [f"{d['name']}: {d.get('description', '(Không có mô tả)')}" for d_name in diet_recs if (d := GraphSchemaService.get_diet_details_by_name(d_name))]
                 analysis_steps.append({"step": "disease_analysis", "message": f"Đối với bệnh '{condition}', các chế độ ăn được khuyến nghị là: {'; '.join(diet_details_msg) if diet_details_msg else 'Chưa có.'}"})
-                
                 methods = GraphSchemaService.get_cook_methods_by_disease(condition)
                 if methods:
                     cooking_methods_after_disease_filter.update(methods)
-            
             analysis_steps.append({"step": "cooking_method_filter_disease", "message": f"Dựa trên bệnh, các phương pháp nấu phù hợp ban đầu là: {', '.join(cooking_methods_after_disease_filter) if cooking_methods_after_disease_filter else 'Không có.'}"})
         else:
-             analysis_steps.append({"step": "disease_analysis", "message": "Bạn không có bệnh lý nền nào được ghi nhận."})
-             # Nếu không có bệnh, bắt đầu với tất cả các cooking methods
-             cooking_methods_after_disease_filter.update(GraphSchemaService.get_all_cooking_methods())
+            analysis_steps.append({"step": "disease_analysis", "message": "Bạn không có bệnh lý nền nào được ghi nhận."})
+            cooking_methods_after_disease_filter.update(GraphSchemaService.get_all_cooking_methods())
 
         # Bước 2: Lọc lại danh sách trên theo BMI
         bmi_category = bmi_result.get("bmi_category")
         cooking_methods_after_bmi_filter = set()
         analysis_steps.append({"step": "bmi_analysis", "message": f"Chỉ số BMI của bạn được phân loại là '{bmi_category}'. Hệ thống sẽ tiếp tục lọc các phương pháp nấu."})
-        
         if bmi_category:
             methods_for_bmi = GraphSchemaService.get_cook_methods_by_bmi(bmi_category)
             if methods_for_bmi:
                 cooking_methods_after_bmi_filter = cooking_methods_after_disease_filter.intersection(methods_for_bmi)
                 analysis_steps.append({"step": "cooking_method_filter_bmi", "message": f"Sau khi lọc theo BMI, các phương pháp nấu còn lại: {', '.join(cooking_methods_after_bmi_filter) if cooking_methods_after_bmi_filter else 'Không có.'}"})
             else:
-                cooking_methods_after_bmi_filter = cooking_methods_after_disease_filter # Giữ nguyên nếu không có pp nấu cho BMI
+                cooking_methods_after_bmi_filter = cooking_methods_after_disease_filter
         else:
-            cooking_methods_after_bmi_filter = cooking_methods_after_disease_filter # Giữ nguyên nếu không có BMI
+            cooking_methods_after_bmi_filter = cooking_methods_after_disease_filter
 
-        # Bước 3: Lọc lại danh sách trên theo Context
+        # Bước 3: Lọc lại danh sách trên theo Context (nếu user không yêu cầu bỏ lọc context)
         weather = state.get("weather")
         time_of_day = state.get("time_of_day")
+        context_analysis_shown = state.get("context_analysis_shown", False)
+        ignore_context_filter = state.get("ignore_context_filter", False)
         cooking_methods_after_context_filter = set()
-
-        if weather and time_of_day:
+        context_name, suggested_methods = None, None
+        if weather and time_of_day and not state.get("selected_cooking_methods") and not ignore_context_filter:
             context_name, suggested_methods = GraphSchemaService.get_context_and_cook_methods(weather, time_of_day)
             if context_name and suggested_methods:
                 analysis_steps.append({"step": "context_analysis", "message": f"Dựa theo nhiệt độ hiện tại {context_name} gợi ý các cách chế biến phù hợp là: {', '.join(suggested_methods)}."})
                 cooking_methods_after_context_filter = cooking_methods_after_bmi_filter.intersection(suggested_methods)
-                # analysis_steps.append({"step": "cooking_method_filter_context", "message": f"Sau khi lọc theo thời tiết, các cách chế biến phù hợp là: {', '.join(cooking_methods_after_context_filter) if cooking_methods_after_context_filter else 'Không có.'}"})
+                context_analysis_shown = True
             else:
                 analysis_steps.append({"step": "context_analysis_failed", "message": f"Không tìm thấy gợi ý đặc biệt cho thời tiết '{weather}' và thời điểm '{time_of_day}'. Giữ nguyên danh sách trước đó."})
                 cooking_methods_after_context_filter = cooking_methods_after_bmi_filter
         else:
-             cooking_methods_after_context_filter = cooking_methods_after_bmi_filter
+            cooking_methods_after_context_filter = cooking_methods_after_bmi_filter
+            context_analysis_shown = False
 
         # --- TẠO PROMPT CUỐI CÙNG ---
         final_cooking_methods = list(cooking_methods_after_context_filter)
-        
         # Fallback: Nếu không còn phương pháp nào, hiển thị tất cả
         if not final_cooking_methods:
             analysis_steps.append({"step": "fallback_cooking_methods", "message": "Không có phương pháp nấu nào phù hợp với tất cả các tiêu chí. Hệ thống sẽ hiển thị tất cả các lựa chọn."})
             final_cooking_methods = GraphSchemaService.get_all_cooking_methods()
-        
+
         cooking_method_prompt = {
             "prompt_type": "select",
             "message": "Dựa trên phân tích, hãy chọn phương pháp chế biến bạn muốn:",
             "options": final_cooking_methods
         }
-        
+
         # Lưu state và dừng lại
-        current_state = {**state, "analysis_steps": analysis_steps, "cooking_method_prompt": cooking_method_prompt, "analysis_shown": False}
+        current_state = {**state, "analysis_steps": analysis_steps, "cooking_method_prompt": cooking_method_prompt, "analysis_shown": False, "context_analysis_shown": context_analysis_shown}
         session_id = save_state_to_redis(current_state)
-        current_state["session_id"] = session_id # Cập nhật lại session_id vào state
+        current_state["session_id"] = session_id
 
         return {
             **current_state,
@@ -146,10 +145,10 @@ def analyze_and_generate_prompts(state: WorkflowState) -> WorkflowState:
                 "status": "analysis_complete",
                 "analysis_steps": analysis_steps,
                 "cooking_method_prompt": cooking_method_prompt,
-                "session_id": session_id
+                "session_id": session_id,
+                "context_analysis_shown": context_analysis_shown
             }
         }
-
     except Exception as e:
         return {**state, "error": f"Lỗi trong bước phân tích: {str(e)}", "step": "analysis_error"}
 
@@ -207,16 +206,25 @@ def classify_topic(state: WorkflowState) -> WorkflowState:
                 "error": "Không có câu hỏi được cung cấp",
                 "step": "topic_classification_failed"
             }
-        
         # Phân loại chủ đề
         classification = check_mode(question)
-        
+        # Nếu là cooking_request thì reset selected_cooking_methods nếu detect được phương pháp nấu mới
+        if classification == "cooking_request":
+            from app.graph.nodes.classify_topic_node import extract_cooking_methods
+            new_methods = extract_cooking_methods(question)
+            # Nếu detect được phương pháp nấu mới hoặc user hỏi "tất cả", reset selected_cooking_methods
+            if new_methods or (isinstance(new_methods, list) and new_methods == ["ALL"]):
+                return {
+                    **state,
+                    "topic_classification": classification,
+                    "selected_cooking_methods": None,  # Reset để process_cooking_request xử lý lại
+                    "step": "topic_classified"
+                }
         return {
             **state,
             "topic_classification": classification,
             "step": "topic_classified"
         }
-        
     except Exception as e:
         return {
             **state,
@@ -573,8 +581,8 @@ def end_rejected(state: WorkflowState) -> WorkflowState:
     user_height = user_data.get("height", "N/A")
     medical_conditions = user_data.get("medicalConditions", [])
     
-    message_parts = [f"Xin lỗi, câu hỏi này không thuộc chủ đề dinh dưỡng mà tôi có thể tư vấn"]
-    message_parts.append(f"Thông tin của bạn: {user_name}, {user_age} tuổi, {user_weight}kg, {user_height}cm")
+    message_parts = [f"Xin lỗi, câu hỏi này không thuộc chủ đề gợi ý món ăn mà tôi có thể tư vấn"]
+    # message_parts.append(f"Thông tin của bạn: {user_name}, {user_age} tuổi, {user_weight}kg, {user_height}cm")
     
     # Thêm thông tin bệnh nếu có
     if medical_conditions and medical_conditions != ["Không có"]:
@@ -742,7 +750,7 @@ def create_workflow() -> StateGraph:
 # Tạo workflow instance
 workflow_graph = create_workflow().compile()
 
-def run_langgraph_workflow_until_selection(user_id: str, question: str, weather: str, time_of_day: str, session_id: str = None) -> dict:
+def run_langgraph_workflow_until_selection(user_id: str, question: str, weather: str, time_of_day: str, session_id: str = None, ignore_context_filter: bool = False) -> dict:
     try:
         # State mặc định cho một session hoàn toàn mới
         initial_state = {
@@ -766,7 +774,9 @@ def run_langgraph_workflow_until_selection(user_id: str, question: str, weather:
             "previous_food_ids": [],
             "analysis_steps": [],
             "analysis_shown": False,
-            "cooking_request_warning": None
+            "cooking_request_warning": None,
+            "context_analysis_shown": False,
+            "ignore_context_filter": ignore_context_filter
         }
 
         if session_id:
@@ -821,3 +831,4 @@ def continue_workflow_with_cooking_method(session_id: str, cooking_methods: List
         })
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Lỗi tiếp tục workflow: {str(e)}")
+

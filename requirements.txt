@@ -4,7 +4,6 @@ langchain
 neo4j
 python-dotenv
 fastapi
-uvicorn
 pymongo
 PyJWT
 redis

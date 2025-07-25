@@ -233,7 +233,7 @@ class GraphSchemaService:
         # Giả định rằng món ăn phù hợp với BMI thì cách chế biến của nó cũng phù hợp.
         query = """
         MATCH (bmi:BMI) WHERE toLower(bmi.name) = toLower($bmi_category)
-        MATCH (bmi)<-[:PHÙ_HỢP_VỚI_BMI]-(dish:Dish)-[:ĐƯỢC_DÙNG_TRONG]->(cm:CookMethod)
+        MATCH (bmi)<-[:PHÙ_HỢP_VỚI_BMI]-(dish:Dish)<-[:ĐƯỢC_DÙNG_TRONG]-(cm:CookMethod)
         RETURN DISTINCT cm.name AS cook_method
         """
         with driver.session() as session:
@@ -311,7 +311,7 @@ class GraphSchemaService:
         """Truy vấn thực phẩm theo phương pháp nấu (không phân biệt hoa thường)"""
         params = {"cooking_method": cooking_method}
         query = """
-        MATCH (dish:Dish)-[:ĐƯỢC_DÙNG_TRONG]->(cm:CookMethod)
+        MATCH (cm:CookMethod)-[:ĐƯỢC_DÙNG_TRONG]->(dish:Dish)
         WHERE toLower(cm.name) = toLower($cooking_method)
         """
         if excluded_ids:
@@ -338,7 +338,7 @@ class GraphSchemaService:
             query = """
             MATCH (dish:Dish)
             OPTIONAL MATCH (dish)-[:ĐƯỢC_DÙNG_TRONG]-(di:Diet)
-            OPTIONAL MATCH (dish)-[:ĐƯỢC_CHẾ_BIẾN_BẰNG]->(cm:CookMethod)
+            OPTIONAL MATCH (cm:CookMethod)-[:ĐƯỢC_DÙNG_TRONG]->(dish)
             RETURN DISTINCT 
                 dish.name AS dish_name,
                 dish.id AS dish_id,
@@ -355,7 +355,7 @@ class GraphSchemaService:
             query = """
             MATCH (dish:Dish)
             OPTIONAL MATCH (dish)-[:ĐƯỢC_DÙNG_TRONG]-(di:Diet)
-            OPTIONAL MATCH (dish)-[:ĐƯỢC_CHẾ_BIẾN_BẰNG]->(cm:CookMethod)
+            OPTIONAL MATCH (cm:CookMethod)-[:ĐƯỢC_DÙNG_TRONG]->(dish)
             RETURN DISTINCT 
                 dish.name AS dish_name,
                 dish.id AS dish_id,

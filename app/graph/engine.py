@@ -67,10 +67,9 @@ def analyze_and_generate_prompts(state: WorkflowState) -> WorkflowState:
         user_data = state.get("user_data", {})
         bmi_result = state.get("bmi_result", {})
         from app.services.graph_schema_service import GraphSchemaService
+        from app.graph.nodes.classify_topic_node import extract_cooking_methods
 
-        # --- QUY TRÌNH LỌC TUẦN TỰ ---
-
-        # Bước 1: Lọc Cách chế biến theo Bệnh
+        # --- PHÂN TÍCH BỆNH, BMI, CONTEXT ---
         medical_conditions = [c for c in user_data.get("medicalConditions", []) if c not in ["Không có", "Bình thường"]]
         cooking_methods_after_disease_filter = set()
         if medical_conditions:
@@ -86,7 +85,6 @@ def analyze_and_generate_prompts(state: WorkflowState) -> WorkflowState:
             analysis_steps.append({"step": "disease_analysis", "message": "Bạn không có bệnh lý nền nào được ghi nhận."})
             cooking_methods_after_disease_filter.update(GraphSchemaService.get_all_cooking_methods())
 
-        # Bước 2: Lọc lại danh sách trên theo BMI
         bmi_category = bmi_result.get("bmi_category")
         cooking_methods_after_bmi_filter = set()
         analysis_steps.append({"step": "bmi_analysis", "message": f"Chỉ số BMI của bạn được phân loại là '{bmi_category}'. Hệ thống sẽ tiếp tục lọc các phương pháp nấu."})
@@ -100,7 +98,6 @@ def analyze_and_generate_prompts(state: WorkflowState) -> WorkflowState:
         else:
             cooking_methods_after_bmi_filter = cooking_methods_after_disease_filter
 
-        # Bước 3: Lọc lại danh sách trên theo Context (nếu user không yêu cầu bỏ lọc context)
         weather = state.get("weather")
         time_of_day = state.get("time_of_day")
         context_analysis_shown = state.get("context_analysis_shown", False)
@@ -120,9 +117,28 @@ def analyze_and_generate_prompts(state: WorkflowState) -> WorkflowState:
             cooking_methods_after_context_filter = cooking_methods_after_bmi_filter
             context_analysis_shown = False
 
-        # --- TẠO PROMPT CUỐI CÙNG ---
+        # --- TRÍCH XUẤT PHƯƠNG PHÁP NẤU TỪ CÂU HỎI ---
+        question = state.get("question", "")
+        extracted_methods = extract_cooking_methods(question)
+        # Nếu detect được phương pháp nấu từ câu hỏi, bỏ qua prompt chọn phương pháp nấu, trả về luôn analysis_steps
+        if extracted_methods:
+            return {
+                **state,
+                "analysis_steps": analysis_steps,
+                "selected_cooking_methods": extracted_methods,
+                "context_analysis_shown": context_analysis_shown,
+                "step": "analysis_complete",
+                "final_result": {
+                    "status": "analysis_complete",
+                    "analysis_steps": analysis_steps,
+                    "selected_cooking_methods": extracted_methods,
+                    "context_analysis_shown": context_analysis_shown,
+                    "session_id": state.get("session_id")
+                }
+            }
+
+        # Nếu không detect được phương pháp nấu, trả về prompt chọn phương pháp nấu như cũ
         final_cooking_methods = list(cooking_methods_after_context_filter)
-        # Fallback: Nếu không còn phương pháp nào, hiển thị tất cả
         if not final_cooking_methods:
             analysis_steps.append({"step": "fallback_cooking_methods", "message": "Không có phương pháp nấu nào phù hợp với tất cả các tiêu chí. Hệ thống sẽ hiển thị tất cả các lựa chọn."})
             final_cooking_methods = GraphSchemaService.get_all_cooking_methods()
@@ -133,8 +149,7 @@ def analyze_and_generate_prompts(state: WorkflowState) -> WorkflowState:
             "options": final_cooking_methods
         }
 
-        # Lưu state và dừng lại
-        current_state = {**state, "analysis_steps": analysis_steps, "cooking_method_prompt": cooking_method_prompt, "analysis_shown": False, "context_analysis_shown": context_analysis_shown}
+        current_state = {**state, "analysis_steps": analysis_steps, "cooking_method_prompt": cooking_method_prompt, "analysis_shown": False, "context_analysis_shown": context_analysis_shown, "selected_cooking_methods": None}
         session_id = save_state_to_redis(current_state)
         current_state["session_id"] = session_id
 

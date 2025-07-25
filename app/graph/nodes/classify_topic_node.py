@@ -33,8 +33,8 @@ Câu hỏi: "{user_question}"
     return "không liên quan"
 
 def extract_cooking_methods(user_question: str) -> list:
-    """Trích xuất các phương pháp nấu từ câu hỏi của user. Nếu phát hiện các từ khóa như 'tất cả', 'món khác', 'bất kỳ', 'gợi ý', 'tùy' thì trả về ['ALL']."""
-    all_keywords = ["tất cả", "tất cả các món", "món khác", "bất kỳ", "gợi ý", "tùy"]
+    """Trích xuất các phương pháp nấu từ câu hỏi của user. Nếu phát hiện các từ khóa như 'tất cả', 'món khác', 'bất kỳ', 'tùy' thì trả về ['ALL']."""
+    all_keywords = ["tất cả", "tất cả các món", "món khác", "bất kỳ", "tùy"]
     question_lower = user_question.lower()
     for kw in all_keywords:
         if kw in question_lower:
@@ -55,7 +55,7 @@ def extract_cooking_methods(user_question: str) -> list:
         "nướng vỉ": ["nướng vỉ", "grill"],
         "nướng lò": ["nướng lò", "bake"],
         "xào khô": ["xào khô", "dry stir fry"],
-        "xào ướt": ["xào ướt", "wet stir fry"]
+        "xào ướt": ["xào ướt", "wet stir fry"],
     }
     found_methods = []
     for method, keywords in cooking_keywords.items():

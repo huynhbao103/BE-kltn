@@ -86,6 +86,35 @@ def aggregate_suitable_foods(state: Dict[str, Any]) -> Dict[str, Any]:
             }
             return {"aggregated_result": result}
 
+        # Nếu user không có bệnh, không có BMI, và chọn tất cả các phương pháp nấu, trả về tất cả món ăn phù hợp với các phương pháp nấu đó
+        if not real_conditions and not bmi_category:
+            from app.services.graph_schema_service import GraphSchemaService
+            all_foods = GraphSchemaService.get_all_foods_for_healthy_person()
+            # Debug log cook_method thực tế
+            print("Cook methods in all_foods:", set(food.get('cook_method') for food in all_foods))
+            print("Selected methods:", selected_cooking_methods)
+            # Nếu user chọn phương pháp nấu cụ thể, filter theo cook_method (không phân biệt hoa thường, bỏ 'Không xác định')
+            if selected_cooking_methods:
+                selected_methods_lower = [m.lower() for m in selected_cooking_methods]
+                all_foods = [food for food in all_foods if food.get('cook_method', '').lower() in selected_methods_lower and food.get('cook_method', '').lower() != 'không xác định']
+            filtered_final_foods = [
+                food for food in all_foods
+                if food.get('dish_id') not in previous_food_ids and food.get('id') not in previous_food_ids
+            ]
+            if not filtered_final_foods:
+                return {"aggregated_result": {
+                    "status": "empty",
+                    "message": "Không còn món ăn phù hợp nào khác để gợi ý.",
+                    "aggregated_foods": []
+                }}
+            result = {
+                "status": "success",
+                "message": f"Tìm thấy {len(filtered_final_foods)} món ăn phù hợp",
+                "aggregated_foods": filtered_final_foods,
+                "criteria_used": ["all"]
+            }
+            return {"aggregated_result": result}
+
         # Nếu user đã chỉ định phương pháp nấu, chỉ trả về món đúng phương pháp, không trả về món phương pháp khác
         # Fallback sẽ bỏ lần lượt context, rồi BMI, rồi bệnh nếu không có món phù hợp
         # 1. Lọc giao cả 3 tiêu chí (bệnh, BMI, phương pháp) + giữ đúng phương pháp nấu

@@ -14,6 +14,5 @@ app.add_middleware(
     allow_headers=["*"],  # Cho phép tất cả headers bao gồm Authorization
     expose_headers=["*"],  # Expose headers to frontend
 )
-
 app.include_router(classify_topic.router, prefix="/api/classify", tags=["Classification"])
 app.include_router(langgraph_workflow.router, prefix="/api/langgraph", tags=["LangGraph Workflow"])

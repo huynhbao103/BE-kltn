@@ -56,12 +56,15 @@ def query_neo4j_for_foods(state: Dict[str, Any]) -> Dict[str, Any]:
         # Nếu không có tiêu chí nào, trả về món ăn phổ biến
         if not all_foods:
             return query_popular_foods(excluded_ids=previous_food_ids)
-        # 5. Lọc theo context (weather + time_of_day)
+        # 5. Lọc theo context (weather + time_of_day) - chỉ khi không ignore context filter
         weather = state.get("weather")
         time_of_day = state.get("time_of_day")
+        ignore_context_filter = state.get("ignore_context_filter", False)
         context_name = None
         suggested_cook_methods = []
-        if weather and time_of_day:
+        
+        # Chỉ áp dụng context filter khi không ignore và có weather/time_of_day
+        if weather and time_of_day and not ignore_context_filter:
             context_name, suggested_cook_methods = GraphSchemaService.get_context_and_cook_methods(weather, time_of_day)
             if suggested_cook_methods:
                 filtered_all_foods = {}

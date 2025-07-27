@@ -104,7 +104,14 @@ def analyze_and_generate_prompts(state: WorkflowState) -> WorkflowState:
         ignore_context_filter = state.get("ignore_context_filter", False)
         cooking_methods_after_context_filter = set()
         context_name, suggested_methods = None, None
-        if weather and time_of_day and not state.get("selected_cooking_methods") and not ignore_context_filter:
+        
+        # Chỉ áp dụng context filter khi user không chọn lọc theo context (ignore_context_filter = True)
+        # hoặc khi user chưa chọn cooking methods cụ thể
+        should_apply_context = (weather and time_of_day and 
+                              not ignore_context_filter and 
+                              not state.get("selected_cooking_methods"))
+        
+        if should_apply_context:
             context_name, suggested_methods = GraphSchemaService.get_context_and_cook_methods(weather, time_of_day)
             if context_name and suggested_methods:
                 analysis_steps.append({"step": "context_analysis", "message": f"Dựa theo nhiệt độ hiện tại {context_name} gợi ý các cách chế biến phù hợp là: {', '.join(suggested_methods)}."})
@@ -437,7 +444,7 @@ def generate_final_result(state: WorkflowState) -> WorkflowState:
             if final_foods:
                 food_names = [food.get("name", "Unknown") for food in final_foods]
                 message_parts.append(f"Đây là những món ăn phù hợp với yêu cầu của bạn: {', '.join(food_names)}")
-                message_parts.append(f"Tổng cộng có {total_count} món ăn để bạn lựa chọn")
+                # message_parts.append(f"Tổng cộng có {total_count} món ăn để bạn lựa chọn")
             else:
                 if previous_food_ids:
                     message_parts.append("Chúng tôi đã gợi ý hết các món ăn phù hợp với yêu cầu của bạn rồi.")

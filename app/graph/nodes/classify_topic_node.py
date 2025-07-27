@@ -16,12 +16,12 @@ Chỉ trả lời duy nhất "tư vấn", "cooking_request" hoặc "không liên
 Câu hỏi: "{user_question}"
 """
     response = client.chat.completions.create(
-        model="gpt-4o",
+        model="gpt-3.5-turbo",
         messages=[
             {"role": "system", "content": "Bạn là một trợ lý AI chuyên phân loại câu hỏi. Nhiệm vụ của bạn là trả lời 'tư vấn' cho các câu hỏi về thực phẩm/dinh dưỡng, 'cooking_request' cho yêu cầu cụ thể về cách chế biến, và 'không liên quan' cho các câu hỏi khác."},
             {"role": "user", "content": prompt}
         ],
-        temperature=0,
+        temperature=0.1,
     )
 
     answer = response.choices[0].message.content.strip().lower()

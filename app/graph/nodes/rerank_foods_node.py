@@ -2,6 +2,7 @@ import os
 from dotenv import load_dotenv
 from openai import OpenAI
 from typing import Dict, Any, List
+from app.services.mongo_service import mongo_service
 load_dotenv()
 client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
 def rerank_foods(state: Dict[str, Any]) -> Dict[str, Any]:
@@ -31,6 +32,7 @@ def rerank_foods(state: Dict[str, Any]) -> Dict[str, Any]:
         user_age = user_data.get("age", "N/A")
         bmi_category = bmi_result.get("bmi_category", "") if bmi_result else ""
         medical_conditions = user_data.get("medicalConditions", [])
+        user_allergies = user_data.get("allergies", [])
         
         # Lọc bệnh thực sự
         real_conditions = []
@@ -39,6 +41,40 @@ def rerank_foods(state: Dict[str, Any]) -> Dict[str, Any]:
                 condition_lower = condition.lower().strip()
                 if condition_lower not in ["không có", "không bệnh", "không có bệnh", "bình thường", "khỏe mạnh"]:
                     real_conditions.append(condition)
+        
+        # Lọc món ăn theo dị ứng (nếu có)
+        if user_allergies:
+            # Lấy thông tin chi tiết món ăn từ MongoDB
+            dish_ids = [food.get("dish_id") for food in aggregated_foods if food.get("dish_id")]
+            dishes_from_mongo = mongo_service.get_dishes_by_ids(dish_ids)
+            
+            # Tạo mapping từ dish_id đến dish data
+            dish_mapping = {dish["_id"]: dish for dish in dishes_from_mongo}
+            
+            # Lọc món ăn theo dị ứng
+            filtered_foods = []
+            for food in aggregated_foods:
+                dish_id = food.get("dish_id")
+                if dish_id and dish_id in dish_mapping:
+                    dish_data = dish_mapping[dish_id]
+                    dish_ingredients = dish_data.get("ingredients", [])
+                    
+                    # Kiểm tra xem món ăn có chứa nguyên liệu dị ứng không
+                    has_allergic_ingredient = False
+                    for allergy in user_allergies:
+                        if allergy.lower() in [ing.lower() for ing in dish_ingredients]:
+                            has_allergic_ingredient = True
+                            break
+                    
+                    # Chỉ thêm món ăn không chứa nguyên liệu dị ứng
+                    if not has_allergic_ingredient:
+                        filtered_foods.append(food)
+                else:
+                    # Nếu không tìm thấy trong MongoDB, giữ lại món ăn (để an toàn)
+                    filtered_foods.append(food)
+            
+            aggregated_foods = filtered_foods
+            print(f"DEBUG: Filtered {len(filtered_foods)} foods after allergy check (removed {len([food.get('dish_id') for food in aggregated_foods if food.get('dish_id')]) - len(filtered_foods)} dishes with allergic ingredients)")
         
         # Chuẩn bị dữ liệu cho LLM
         foods_data = []
@@ -66,6 +102,11 @@ def rerank_foods(state: Dict[str, Any]) -> Dict[str, Any]:
         if real_conditions:
             conditions_text = ", ".join(real_conditions)
         
+        # Tạo thông tin dị ứng
+        allergies_text = "không có dị ứng"
+        if user_allergies:
+            allergies_text = ", ".join(user_allergies)
+        
         # Tạo thông tin cách chế biến
         cooking_text = "không yêu cầu cụ thể"
         if selected_cooking_methods:
@@ -84,6 +125,7 @@ def rerank_foods(state: Dict[str, Any]) -> Dict[str, Any]:
 - Câu hỏi: \"{user_question}\"
 - Phân loại BMI: {bmi_category}
 - Tình trạng bệnh: {conditions_text}
+- Dị ứng: {allergies_text}
 - Cảm xúc hiện tại: {selected_emotion}
 - Cách chế biến ưa thích: {cooking_text}
 

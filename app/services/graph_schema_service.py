@@ -283,29 +283,6 @@ class GraphSchemaService:
         with driver.session() as session:
             result = session.run(query)
             return [record.data() for record in result]
-    
-    @staticmethod
-    def get_foods_by_emotion(emotion: str, excluded_ids: List[str] = None):
-        """Truy vấn thực phẩm phù hợp với cảm xúc"""
-        params = {"emotion": emotion}
-        query = "MATCH (dish:Dish) "
-        
-        if excluded_ids:
-            query += "WHERE NOT dish.id IN $excluded_ids "
-            params["excluded_ids"] = excluded_ids
-
-        query += """
-        RETURN DISTINCT 
-            dish.name AS dish_name,
-            dish.id AS dish_id,
-            $emotion AS emotion,
-            dish.description AS description
-        ORDER BY dish.name
-        """
-        with driver.session() as session:
-            result = session.run(query, **params)
-            return [record.data() for record in result]
-    
     @staticmethod
     def get_foods_by_cooking_method(cooking_method: str, excluded_ids: List[str] = None):
         """Truy vấn thực phẩm theo phương pháp nấu (không phân biệt hoa thường)"""

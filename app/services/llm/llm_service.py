@@ -8,7 +8,7 @@ class LLMService:
     """
     
     @staticmethod
-    def get_completion(prompt: str, model: str = "gpt-4o") -> str:
+    def get_completion(prompt: str, model: str = "gpt-3.5-turbo") -> str:
         """
         Gọi LLM API để lấy completion
         """

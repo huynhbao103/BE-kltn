@@ -1,5 +1,5 @@
 from app.config import mongo_db
-from typing import Optional, Dict, Any
+from typing import Optional, Dict, Any, List
 from datetime import datetime
 from bson import ObjectId
 
@@ -62,8 +62,9 @@ class MongoService:
         Cập nhật thông tin user
         """
         try:
+            object_id = self._convert_to_object_id(user_id)
             result = self.users_collection.update_one(
-                {"_id": user_id},
+                {"_id": object_id},
                 {"$set": update_data}
             )
             return result.modified_count > 0
@@ -88,6 +89,7 @@ class MongoService:
                     "height": 1,
                     "activityLevel": 1,
                     "medicalConditions": 1,
+                    "allergies": 1,
                     "lastUpdateDate": 1
                 }
             )
@@ -193,6 +195,117 @@ class MongoService:
         except Exception as e:
             print(f"Error getting all users: {e}")
             return []
+
+    # ===== DISH MANAGEMENT =====
+    
+    def get_dishes_collection(self):
+        """Lấy collection dishes"""
+        return self.db.dishes
+    
+    def create_dish(self, dish_data: Dict[str, Any]) -> Optional[str]:
+        """
+        Tạo món ăn mới
+        """
+        try:
+            dishes_collection = self.get_dishes_collection()
+            result = dishes_collection.insert_one(dish_data)
+            return str(result.inserted_id)
+        except Exception as e:
+            print(f"Error creating dish: {e}")
+            return None
+    
+    def get_dish_by_id(self, dish_id: str) -> Optional[Dict[str, Any]]:
+        """
+        Lấy thông tin món ăn theo ID
+        """
+        try:
+            dishes_collection = self.get_dishes_collection()
+            dish = dishes_collection.find_one({"_id": dish_id})
+            if dish:
+                dish["_id"] = str(dish["_id"])
+            return dish
+        except Exception as e:
+            print(f"Error getting dish: {e}")
+            return None
+    
+    def get_all_dishes(self) -> List[Dict[str, Any]]:
+        """
+        Lấy tất cả món ăn
+        """
+        try:
+            dishes_collection = self.get_dishes_collection()
+            dishes = list(dishes_collection.find({}))
+            for dish in dishes:
+                dish["_id"] = str(dish["_id"])
+            return dishes
+        except Exception as e:
+            print(f"Error getting all dishes: {e}")
+            return []
+    
+    def filter_dishes_by_allergies(self, dishes: List[Dict[str, Any]], user_allergies: List[str]) -> List[Dict[str, Any]]:
+        """
+        Lọc món ăn theo danh sách dị ứng của user
+        """
+        if not user_allergies:
+            return dishes
+        
+        filtered_dishes = []
+        for dish in dishes:
+            dish_ingredients = dish.get("ingredients", [])
+            
+            # Kiểm tra xem món ăn có chứa nguyên liệu dị ứng không
+            has_allergic_ingredient = False
+            for allergy in user_allergies:
+                if allergy.lower() in [ing.lower() for ing in dish_ingredients]:
+                    has_allergic_ingredient = True
+                    break
+            
+            # Chỉ thêm món ăn không chứa nguyên liệu dị ứng
+            if not has_allergic_ingredient:
+                filtered_dishes.append(dish)
+        
+        return filtered_dishes
+    
+    def get_dishes_by_ids(self, dish_ids: List[str]) -> List[Dict[str, Any]]:
+        """
+        Lấy danh sách món ăn theo danh sách ID
+        """
+        try:
+            dishes_collection = self.get_dishes_collection()
+            dishes = list(dishes_collection.find({"_id": {"$in": dish_ids}}))
+            for dish in dishes:
+                dish["_id"] = str(dish["_id"])
+            return dishes
+        except Exception as e:
+            print(f"Error getting dishes by IDs: {e}")
+            return []
+    
+    def update_dish(self, dish_id: str, update_data: Dict[str, Any]) -> bool:
+        """
+        Cập nhật thông tin món ăn
+        """
+        try:
+            dishes_collection = self.get_dishes_collection()
+            result = dishes_collection.update_one(
+                {"_id": dish_id},
+                {"$set": update_data}
+            )
+            return result.modified_count > 0
+        except Exception as e:
+            print(f"Error updating dish: {e}")
+            return False
+    
+    def delete_dish(self, dish_id: str) -> bool:
+        """
+        Xóa món ăn
+        """
+        try:
+            dishes_collection = self.get_dishes_collection()
+            result = dishes_collection.delete_one({"_id": dish_id})
+            return result.deleted_count > 0
+        except Exception as e:
+            print(f"Error deleting dish: {e}")
+            return False
 
 # Tạo instance global
 mongo_service = MongoService() 

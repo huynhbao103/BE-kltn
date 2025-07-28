@@ -4,4 +4,5 @@ from .query_neo4j_node import query_neo4j_for_foods
 from .aggregate_suitable_foods_node import aggregate_suitable_foods
 from .rerank_foods_node import rerank_foods
 from .fallback_query_node import create_fallback_query
+from .filter_allergies_node import filter_foods_by_allergies
 

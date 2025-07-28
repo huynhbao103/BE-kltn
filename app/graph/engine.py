@@ -5,6 +5,7 @@ from app.graph.nodes.calculate_bmi_node import calculate_bmi_from_user_id
 from app.graph.nodes.query_neo4j_node import query_neo4j_for_foods
 from app.graph.nodes.aggregate_suitable_foods_node import aggregate_suitable_foods
 from app.graph.nodes.rerank_foods_node import rerank_foods
+from app.graph.nodes.filter_allergies_node import filter_foods_by_allergies
 # from app.graph.nodes.llm_check_food_suitability_node import check_food_suitability
 from app.graph.nodes.fallback_query_node import create_fallback_query
 from app.graph.nodes.process_cooking_request_node import process_cooking_request
@@ -23,6 +24,7 @@ class WorkflowState(TypedDict):
     topic_classification: str
     bmi_result: Dict[str, Any]
     neo4j_result: Dict[str, Any]
+    filtered_result: Optional[Dict[str, Any]]
     aggregated_result: Dict[str, Any]
     rerank_result: Optional[Dict[str, Any]]
     llm_check_result: Optional[Dict[str, Any]]
@@ -342,9 +344,37 @@ def query_neo4j(state: WorkflowState) -> WorkflowState:
             "step": "neo4j_query_error"
         }
 
-def aggregate_foods(state: WorkflowState) -> WorkflowState:
-    """ Node 7: Tổng hợp các món ăn phù hợp """
+def filter_allergies(state: WorkflowState) -> WorkflowState:
+    """ Node 7: Lọc món ăn theo dị ứng của người dùng """
     try:
+        # Gọi node lọc dị ứng
+        filter_result = filter_foods_by_allergies(state)
+        
+        # Lấy filtered_result từ kết quả
+        filtered_result = filter_result.get("filtered_result", {})
+        
+        return {
+            **state,
+            "filtered_result": filtered_result,
+            "step": "allergies_filtered"
+        }
+        
+    except Exception as e:
+        return {
+            **state,
+            "error": f"Lỗi lọc món ăn theo dị ứng: {str(e)}",
+            "step": "allergy_filter_error"
+        }
+
+def aggregate_foods(state: WorkflowState) -> WorkflowState:
+    """ Node 8: Tổng hợp các món ăn phù hợp """
+    try:
+        # Sử dụng filtered_result thay vì neo4j_result
+        filtered_result = state.get("filtered_result", {})
+        if filtered_result:
+            # Cập nhật state để sử dụng filtered_result
+            state["query_result"] = filtered_result
+        
         # Gọi node tổng hợp
         aggregate_result = aggregate_suitable_foods(state)
         
@@ -365,7 +395,7 @@ def aggregate_foods(state: WorkflowState) -> WorkflowState:
         }
 
 def rerank_foods_wrapper(state: WorkflowState) -> WorkflowState:
-    """ Node 8: Rerank các món ăn sử dụng LLM """
+    """ Node 9: Rerank các món ăn sử dụng LLM """
     try:
         rerank_result_from_node = rerank_foods(state)
         reranked_result = rerank_result_from_node.get("rerank_result", {})
@@ -391,7 +421,7 @@ def rerank_foods_wrapper(state: WorkflowState) -> WorkflowState:
 
 
 def generate_final_result(state: WorkflowState) -> WorkflowState:
-    """ Node 9: Tạo kết quả cuối cùng """
+    """ Node 10: Tạo kết quả cuối cùng """
     try:
         user_data = state.get("user_data", {})
         question = state.get("question", "")
@@ -410,6 +440,21 @@ def generate_final_result(state: WorkflowState) -> WorkflowState:
         cooking_request_warning = state.get("cooking_request_warning")
         if cooking_request_warning:
             message_parts.append(f"💡 Lưu ý: {cooking_request_warning}")
+        
+        # Thêm thông tin cảnh báo dị ứng
+        filtered_result = state.get("filtered_result", {})
+        allergy_warnings = filtered_result.get("allergy_warnings", {})
+        if allergy_warnings:
+            warning_messages = []
+            for source_key, warnings in allergy_warnings.items():
+                for warning in warnings:
+                    dish_name = warning.get("dish_name", "Unknown")
+                    warning_text = ", ".join(warning.get("warnings", []))
+                    if warning_text:
+                        warning_messages.append(f"⚠️ {dish_name}: {warning_text}")
+            
+            if warning_messages:
+                message_parts.append("Cảnh báo dị ứng: " + " | ".join(warning_messages))
 
         if rerank_result and rerank_result.get("status") == "success":
             ranked_foods = rerank_result.get("ranked_foods", [])
@@ -463,10 +508,17 @@ def generate_final_result(state: WorkflowState) -> WorkflowState:
                 "age": user_data.get("age", "N/A"),
                 "bmi": bmi_result.get("bmi", "N/A") if bmi_result else "N/A",
                 "bmi_category": bmi_result.get("bmi_category", "N/A") if bmi_result else "N/A",
-                "medical_conditions": medical_conditions if medical_conditions and medical_conditions != ["Không có"] else []
+                "medical_conditions": medical_conditions if medical_conditions and medical_conditions != ["Không có"] else [],
+                "allergies": user_data.get("allergies", [])
             },
             "selected_cooking_methods": state.get("selected_cooking_methods", []),
             "rerank_criteria": rerank_result.get("rerank_criteria", {}) if rerank_result else {},
+            "allergy_info": {
+                "user_allergies": user_data.get("allergies", []),
+                "original_food_count": filtered_result.get("original_food_count", 0),
+                "filtered_food_count": filtered_result.get("filtered_food_count", 0),
+                "allergy_warnings": allergy_warnings
+            },
             "timestamp": datetime.now().isoformat(),
             "session_id": session_id
         }
@@ -567,6 +619,8 @@ def should_continue(state: WorkflowState) -> str:
         # Step này chỉ được gọi khi FE gửi lên cả emotion và cooking method
         return "query_neo4j"
     elif step == "neo4j_queried":
+        return "filter_allergies"
+    elif step == "allergies_filtered":
         return "aggregate_foods"
     elif step == "foods_aggregated":
         return "rerank_foods"
@@ -665,6 +719,7 @@ def create_workflow() -> StateGraph:
     workflow.add_node("analyze_and_generate_prompts", analyze_and_generate_prompts) # Thêm node mới
     workflow.add_node("process_cooking_request", process_cooking_request) # Thêm node xử lý cooking request
     workflow.add_node("query_neo4j", query_neo4j)
+    workflow.add_node("filter_allergies", filter_allergies)
     workflow.add_node("aggregate_foods", aggregate_foods)
     workflow.add_node("rerank_foods", rerank_foods_wrapper)
     workflow.add_node("generate_result", generate_final_result)
@@ -733,6 +788,14 @@ def create_workflow() -> StateGraph:
         "query_neo4j",
         should_continue,
         {
+            "filter_allergies": "filter_allergies",
+            "end_with_error": "end_with_error"
+        }
+    )
+    workflow.add_conditional_edges(
+        "filter_allergies",
+        should_continue,
+        {
             "aggregate_foods": "aggregate_foods",
             "end_with_error": "end_with_error"
         }
@@ -785,6 +848,7 @@ def run_langgraph_workflow_until_selection(user_id: str, question: str, weather:
             "topic_classification": "",
             "bmi_result": {},
             "neo4j_result": {},
+            "filtered_result": None,
             "aggregated_result": {},
             "reranked_foods": None,
             "fallback_attempt": 0,

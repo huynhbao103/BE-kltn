@@ -35,39 +35,38 @@ def process_cooking_request(state: Dict[str, Any]) -> Dict[str, Any]:
         
         # Kiểm tra tính phù hợp với bệnh
         medical_conditions = [c for c in user_data.get("medicalConditions", []) if c not in ["Không có", "Bình thường"]]
-        suitable_methods = []
-        unsuitable_methods = []
-        warning_messages = []
-        
-        for method in requested_methods:
-            is_suitable = True
-            
-            # Kiểm tra từng bệnh
-            for condition in medical_conditions:
-                disease_methods = GraphSchemaService.get_cook_methods_by_disease(condition)
-                if disease_methods and method not in disease_methods:
-                    is_suitable = False
-                    warning_messages.append(f"Phương pháp '{method}' có thể không phù hợp với tình trạng '{condition}' của bạn")
-            
-            if is_suitable:
-                suitable_methods.append(method)
-            else:
-                unsuitable_methods.append(method)
-        
-        # Tạo message cảnh báo nếu có
-        warning_message = ""
-        if warning_messages:
-            warning_message = " | ".join(warning_messages)
-        
+        allowed_methods = set()
+        for condition in medical_conditions:
+            allowed_methods.update(GraphSchemaService.get_cook_methods_by_disease(condition))
+        if not allowed_methods:
+            allowed_methods = set(GraphSchemaService.get_all_cooking_methods())
+
+        # Lọc các phương pháp phù hợp và không phù hợp
+        suitable_methods = [m for m in requested_methods if m in allowed_methods]
+        unsuitable_methods = [m for m in requested_methods if m not in allowed_methods]
+
+        warning_message = None
+        if unsuitable_methods:
+            warning_message = (
+                f"Các phương pháp nấu sau không phù hợp với tình trạng bệnh của bạn và đã bị loại bỏ: {', '.join(unsuitable_methods)}"
+            )
+
+        # Nếu không còn phương pháp nào phù hợp, có thể trả về lỗi hoặc yêu cầu chọn lại
+        if not suitable_methods:
+            return {
+                **state,
+                "selected_cooking_methods": [],
+                "cooking_request_warning": warning_message or "Không có phương pháp nấu nào phù hợp với tình trạng bệnh của bạn.",
+                "step": "cooking_request_processed"
+            }
+
         # Cập nhật state
-        updated_state = {
+        return {
             **state,
-            "selected_cooking_methods": suitable_methods + unsuitable_methods,  # Bao gồm cả phù hợp và không phù hợp
-            "cooking_request_warning": warning_message if warning_message else None,
+            "selected_cooking_methods": suitable_methods,
+            "cooking_request_warning": warning_message,
             "step": "cooking_request_processed"
         }
-        
-        return updated_state
         
     except Exception as e:
         return {

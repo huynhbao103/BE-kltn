@@ -11,9 +11,9 @@ from app.config import JWT_SECRET_KEY
 router = APIRouter()
 
 class WorkflowInput(BaseModel):
-    question: str  # Chỉ cần question, user_id sẽ lấy từ token
-    weather: str
-    time_of_day: str
+    question: str
+    weather: Optional[str] = None
+    time_of_day: Optional[str] = None
     session_id: Optional[str] = None
     ignore_context_filter: bool = False
 
@@ -73,6 +73,13 @@ def process_with_langgraph(
     data: WorkflowInput,
     user_id: str = Depends(get_user_id_from_token),
 ):
+    # Nếu không ignore context filter thì bắt buộc phải có weather và time_of_day
+    if not data.ignore_context_filter:
+        if not data.weather or not data.time_of_day:
+            raise HTTPException(
+                status_code=422,
+                detail="weather và time_of_day là bắt buộc khi ignore_context_filter=False"
+            )
     try:
         # Chạy workflow từ đầu để lấy phân tích và prompts
         result = run_langgraph_workflow_until_selection(

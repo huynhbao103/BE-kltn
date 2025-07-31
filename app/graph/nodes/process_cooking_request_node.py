@@ -48,7 +48,7 @@ def process_cooking_request(state: Dict[str, Any]) -> Dict[str, Any]:
         warning_message = None
         if unsuitable_methods:
             warning_message = (
-                f"Các phương pháp nấu sau không phù hợp với tình trạng bệnh của bạn và đã bị loại bỏ: {', '.join(unsuitable_methods)}"
+                f"phương pháp nấu không phù hợp với tình trạng bệnh của bạn và đã bị loại bỏ: {', '.join(unsuitable_methods)}"
             )
 
         # Nếu không còn phương pháp nào phù hợp, có thể trả về lỗi hoặc yêu cầu chọn lại

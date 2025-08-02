@@ -111,18 +111,6 @@ Content-Type: application/json
 }
 ```
 
-### 3. Xử lý cảm xúc
-```http
-POST /api/langgraph/process-emotion
-Authorization: Bearer <JWT_TOKEN>
-Content-Type: application/json
-
-{
-    "session_id": "session_uuid",
-    "emotion": "Mệt mỏi"
-}
-```
-
 ### 4. Thông tin workflow
 ```http
 GET /api/langgraph/workflow-info

@@ -5,4 +5,5 @@ from .aggregate_suitable_foods_node import aggregate_suitable_foods
 from .rerank_foods_node import rerank_foods
 from .fallback_query_node import create_fallback_query
 from .filter_allergies_node import filter_foods_by_allergies
+from .generate_natural_response_node import generate_natural_response
 

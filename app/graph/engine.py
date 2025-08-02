@@ -6,6 +6,7 @@ from app.graph.nodes.query_neo4j_node import query_neo4j_for_foods
 from app.graph.nodes.aggregate_suitable_foods_node import aggregate_suitable_foods
 from app.graph.nodes.rerank_foods_node import rerank_foods
 from app.graph.nodes.filter_allergies_node import filter_foods_by_allergies
+from app.graph.nodes.generate_natural_response_node import generate_natural_response
 # from app.graph.nodes.llm_check_food_suitability_node import check_food_suitability
 from app.graph.nodes.fallback_query_node import create_fallback_query
 from app.graph.nodes.process_cooking_request_node import process_cooking_request
@@ -44,6 +45,7 @@ class WorkflowState(TypedDict):
     cooking_request_warning: Optional[str]
     context_analysis_shown: Optional[bool]
     ignore_context_filter: Optional[bool]
+    natural_response: Optional[str]
 
 # Node kiểm tra session đầu workflow
 
@@ -418,10 +420,28 @@ def rerank_foods_wrapper(state: WorkflowState) -> WorkflowState:
             "step": "rerank_error"
         }
 
+def generate_natural_response_wrapper(state: WorkflowState) -> WorkflowState:
+    """ Node 10: Tạo câu trả lời tự nhiên bằng LLM """
+    try:
+        natural_response_result = generate_natural_response(state)
+        natural_response = natural_response_result.get("natural_response", "")
+        
+        return {
+            **state,
+            "natural_response": natural_response,
+            "step": "natural_response_generated"
+        }
+    except Exception as e:
+        return {
+            **state,
+            "error": f"Lỗi tạo câu trả lời tự nhiên: {str(e)}",
+            "step": "natural_response_error"
+        }
+
 
 
 def generate_final_result(state: WorkflowState) -> WorkflowState:
-    """ Node 10: Tạo kết quả cuối cùng """
+    """ Node 11: Tạo kết quả cuối cùng """
     try:
         user_data = state.get("user_data", {})
         question = state.get("question", "")
@@ -431,15 +451,17 @@ def generate_final_result(state: WorkflowState) -> WorkflowState:
         previous_food_ids = state.get("previous_food_ids", [])
         session_id = state.get("session_id")
 
-        message_parts = []
+        # Sử dụng câu trả lời tự nhiên từ LLM nếu có
+        natural_response = state.get("natural_response", "")
         medical_conditions = user_data.get("medicalConditions", [])
         final_foods = []
         newly_suggested_food_ids = []
         
         # Thêm warning message nếu có cooking request
         cooking_request_warning = state.get("cooking_request_warning")
+        warning_parts = []
         if cooking_request_warning:
-            message_parts.append(f"💡 Lưu ý: {cooking_request_warning}")
+            warning_parts.append(f"💡 Lưu ý: {cooking_request_warning}")
         
         # Thêm thông tin cảnh báo dị ứng
         filtered_result = state.get("filtered_result", {})
@@ -454,7 +476,7 @@ def generate_final_result(state: WorkflowState) -> WorkflowState:
                         warning_messages.append(f"⚠️ {dish_name}: {warning_text}")
             
             if warning_messages:
-                message_parts.append("Cảnh báo dị ứng: " + " | ".join(warning_messages))
+                warning_parts.append("Cảnh báo dị ứng: " + " | ".join(warning_messages))
 
         if rerank_result and rerank_result.get("status") == "success":
             ranked_foods = rerank_result.get("ranked_foods", [])
@@ -486,17 +508,26 @@ def generate_final_result(state: WorkflowState) -> WorkflowState:
                 if food.get("id") in previous_food_ids:
                     pass # Tạm thời vô hiệu hóa log
 
+        # Tạo message cuối cùng
+        if natural_response:
+            # Sử dụng câu trả lời tự nhiên từ LLM
+            detailed_message = natural_response
+            # Thêm warnings nếu có
+            if warning_parts:
+                detailed_message = " | ".join(warning_parts) + " | " + detailed_message
+        else:
+            # Fallback về message cũ nếu không có natural response
+            message_parts = []
             if final_foods:
                 food_names = [food.get("name", "Unknown") for food in final_foods]
                 message_parts.append(f"Đây là những món ăn phù hợp với yêu cầu của bạn: {', '.join(food_names)}")
-                # message_parts.append(f"Tổng cộng có {total_count} món ăn để bạn lựa chọn")
             else:
                 if previous_food_ids:
                     message_parts.append("Chúng tôi đã gợi ý hết các món ăn phù hợp với yêu cầu của bạn rồi.")
                 else:
                     message_parts.append("Xin lỗi, chúng tôi không tìm thấy món ăn nào phù hợp với yêu cầu của bạn")
-
-        detailed_message = " | ".join(message_parts)
+            
+            detailed_message = " | ".join(warning_parts + message_parts)
 
         final_result = {
             "status": "success",
@@ -625,6 +656,8 @@ def should_continue(state: WorkflowState) -> str:
     elif step == "foods_aggregated":
         return "rerank_foods"
     elif step == "foods_reranked":
+        return "generate_natural_response"
+    elif step == "natural_response_generated":
         return "generate_result"
     elif step == "result_generated":
         return "end_success"
@@ -722,6 +755,7 @@ def create_workflow() -> StateGraph:
     workflow.add_node("filter_allergies", filter_allergies)
     workflow.add_node("aggregate_foods", aggregate_foods)
     workflow.add_node("rerank_foods", rerank_foods_wrapper)
+    workflow.add_node("generate_natural_response", generate_natural_response_wrapper)
     workflow.add_node("generate_result", generate_final_result)
     workflow.add_node("end_with_error", end_with_error)
     workflow.add_node("end_rejected", end_rejected)
@@ -812,6 +846,14 @@ def create_workflow() -> StateGraph:
         "rerank_foods",
         should_continue,
         {
+            "generate_natural_response": "generate_natural_response",
+            "end_with_error": "end_with_error"
+        }
+    )
+    workflow.add_conditional_edges(
+        "generate_natural_response",
+        should_continue,
+        {
             "generate_result": "generate_result",
             "end_with_error": "end_with_error"
         }
@@ -862,7 +904,8 @@ def run_langgraph_workflow_until_selection(user_id: str, question: str, weather:
             "analysis_shown": False,
             "cooking_request_warning": None,
             "context_analysis_shown": False,
-            "ignore_context_filter": ignore_context_filter
+            "ignore_context_filter": ignore_context_filter,
+            "natural_response": None
         }
 
         if session_id:

@@ -36,8 +36,6 @@ def calculate_bmi(user_data: Dict[str, Any]) -> Dict[str, Any]:
 
     # Trẻ em (< 20 tuổi)
     if age < 20:
-        # Lưu ý: phần này trong thực tế cần bảng phân vị theo tuổi/giới
-        # Dưới đây là phân loại tạm thời để minh họa
         if bmi < 14:
             bmi_category = "Thiếu cân (theo ước lượng)"
         elif 14 <= bmi < 20:

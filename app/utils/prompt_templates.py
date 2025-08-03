@@ -106,3 +106,76 @@ Chỉ trả về danh sách tên món ăn, không giải thích hay thêm thông
 """
     
     return prompt
+
+def get_natural_response_prompt(question: str, user_info: dict, food_info: list, cooking_methods: list, weather: str, time_of_day: str, topic_classification: str) -> str:
+    """
+    Tạo prompt cho việc tạo câu trả lời tự nhiên bằng LLM
+    """
+    user_name = user_info.get("name", "Unknown")
+    user_age = user_info.get("age", "N/A")
+    bmi_category = user_info.get("bmi_category", "N/A")
+    medical_conditions = user_info.get("medical_conditions", [])
+    allergies = user_info.get("allergies", [])
+    
+    # Tạo thông tin món ăn
+    foods_text = ""
+    for i, food in enumerate(food_info[:10], 1):  # Chỉ lấy 5 món đầu để tránh prompt quá dài
+        foods_text += f"{i}. {food['name']}"
+        if food.get('description'):
+            foods_text += f" - {food['description']}"
+        if food.get('cook_method'):
+            foods_text += f" (Chế biến: {food['cook_method']})"
+        foods_text += "\n"
+    
+    # Tạo thông tin bệnh
+    conditions_text = "không có bệnh đặc biệt"
+    if medical_conditions and medical_conditions != ["Không có"]:
+        conditions_text = ", ".join(medical_conditions)
+    
+    # Tạo thông tin dị ứng
+    allergies_text = "không có dị ứng"
+    if allergies and allergies != ["Không có"]:
+        allergies_text = ", ".join(allergies)
+    
+    # Tạo thông tin cách chế biến
+    cooking_text = "không yêu cầu cụ thể"
+    if cooking_methods:
+        cooking_text = ", ".join(cooking_methods)
+    
+    # Tạo thông tin thời tiết và thời gian
+    context_text = ""
+    if weather and time_of_day:
+        context_text = f"Thời tiết hiện tại: {weather}, Thời gian: {time_of_day}"
+    
+    prompt = f"""
+Bạn là một chuyên gia dinh dưỡng thân thiện và am hiểu về lĩnh vực ẩm thực của Việt Nam. Hãy tạo một câu trả lời tự nhiên, thân thiện và hữu ích cho người dùng dựa trên thông tin sau:
+
+CÂU HỎI CỦA NGƯỜI DÙNG: {question}
+
+THÔNG TIN NGƯỜI DÙNG:
+- Tên: {user_name}
+- Tuổi: {user_age}
+- Phân loại BMI: {bmi_category}
+- Tình trạng bệnh: {conditions_text}
+- Dị ứng: {allergies_text}
+- Cách chế biến ưa thích: {cooking_text}
+- {context_text}
+
+CÁC MÓN ĂN PHÙ HỢP:
+{foods_text}
+
+YÊU CẦU:
+1. Tạo câu trả lời tự nhiên, thân thiện như đang trò chuyện với bạn bè
+2. Giải thích ngắn gọn tại sao những món này phù hợp với người dùng
+3. Đề cập đến các yếu tố như BMI, bệnh lý, dị ứng nếu có
+4. Nếu có thông tin thời tiết/thời gian, hãy đề cập đến sự phù hợp
+5. Khuyến khích người dùng thử các món ăn được gợi ý
+6. Độ dài câu trả lời khoảng 2-4 câu, không quá dài
+7. Sử dụng ngôn ngữ tự nhiên, không cứng nhắc như bot
+8. LƯU Ý ĐẶC BIỆT: CHỈ LẤY CÁC MÓN ĂN PHÙ HỢP TỪ DỮ LIỆU CỦA TÔI , KHÔNG THÊM MÓN ĂN BÊN NGOÀI NÀO KHÁC
+9. Lưu ý:  liệt kê lại tên các món ăn trong câu trả lời, đề cập đến chúng một cách tự nhiên.
+10. Lưu ý:  không được thêm bất kỳ món ăn nào bên ngoài dữ liệu của tôi.
+12. Nếu có thời tiết thì đề cập đến thời tiết
+"""
+    
+    return prompt

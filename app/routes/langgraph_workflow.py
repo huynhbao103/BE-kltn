@@ -136,7 +136,7 @@ def get_workflow_info():
             },
             {
                 "name": "classify_topic", 
-                "description": "Phân loại chủ đề câu hỏi sử dụng OpenAI GPT-4"
+                "description": "Phân loại chủ đề câu hỏi sử dụng OpenAI GPT-4o"
             },
             {
                 "name": "classify_intent",

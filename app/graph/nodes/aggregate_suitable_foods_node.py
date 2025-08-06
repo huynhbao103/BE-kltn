@@ -172,7 +172,44 @@ def aggregate_suitable_foods(state: Dict[str, Any]) -> Dict[str, Any]:
                 "criteria_used": neo4j_result.get("cooking_methods_checked", [])
             }
             return {"aggregated_result": result}
-        # 5. Nếu vẫn không có, trả về empty, không fallback sang phương pháp khác
+        # 5. Nếu vẫn không có, kiểm tra xem có phải request món chay không
+        user_question = state.get('question', '').lower()
+        if 'chay' in user_question:
+            print("DEBUG: No foods found but user asked for vegetarian, filtering by name...")
+            # Lấy tất cả món ăn và filter bằng tên
+            try:
+                from app.services.graph_schema_service import GraphSchemaService
+                all_foods = GraphSchemaService.get_all_foods_for_healthy_person()
+                
+                # Filter món chay bằng từ khóa trong tên
+                vegetarian_keywords = ['rau', 'củ', 'đậu', 'nấm', 'cháo', 'chè', 'bánh', 'sinh tố', 'salad', 'gỏi', 'canh', 'súp', 'cơm', 'bún', 'phở', 'mì']
+                meat_keywords = ['thịt', 'cá', 'gà', 'vịt', 'bò', 'heo', 'tôm', 'cua', 'mực', 'ốc', 'sò', 'trứng', 'lươn', 'bạch tuộc', 'hải sản']
+                
+                vegetarian_foods = []
+                for food in all_foods:
+                    dish_name = food.get('dish_name', '').lower()
+                    has_meat = any(meat_word in dish_name for meat_word in meat_keywords)
+                    has_veg = any(veg_word in dish_name for veg_word in vegetarian_keywords)
+                    
+                    if not has_meat and (has_veg or 'chay' in dish_name):
+                        vegetarian_foods.append(food)
+                
+                # Lọc trừ previous_food_ids
+                filtered_vegetarian = [food for food in vegetarian_foods if food.get('dish_id') not in previous_food_ids]
+                
+                if filtered_vegetarian:
+                    print(f"DEBUG: Found {len(filtered_vegetarian)} vegetarian foods by name filtering")
+                    return {"aggregated_result": {
+                        "status": "success",
+                        "message": f"Tìm thấy {len(filtered_vegetarian)} món chay từ cơ sở dữ liệu",
+                        "aggregated_foods": filtered_vegetarian
+                    }}
+                else:
+                    print("DEBUG: No vegetarian foods found by name filtering")
+            except Exception as e:
+                print(f"DEBUG: Vegetarian filtering failed: {e}")
+        
+        # Nếu không phải món chay hoặc filter fail, trả về empty
         return {"aggregated_result": {
             "status": "empty",
             "message": "Không có món ăn nào phù hợp với yêu cầu của bạn.",

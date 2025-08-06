@@ -107,7 +107,7 @@ Chỉ trả về danh sách tên món ăn, không giải thích hay thêm thông
     
     return prompt
 
-def get_natural_response_prompt(question: str, user_info: dict, food_info: list, cooking_methods: list, weather: str, time_of_day: str, topic_classification: str) -> str:
+def get_natural_response_prompt(question: str, user_info: dict, food_info: list, cooking_methods: list, weather: str, time_of_day: str, topic_classification: str, constraints_info: dict = None) -> str:
     """
     Tạo prompt cho việc tạo câu trả lời tự nhiên bằng LLM
     """
@@ -117,15 +117,24 @@ def get_natural_response_prompt(question: str, user_info: dict, food_info: list,
     medical_conditions = user_info.get("medical_conditions", [])
     allergies = user_info.get("allergies", [])
     
+    # Xử lý thông tin constraints nếu có (không hiển thị excluded methods)
+    constraints_text = ""
+    if constraints_info:
+        if constraints_info.get("aggregated_message"):
+            constraints_text += f"ℹ️ Thông tin tìm kiếm: {constraints_info['aggregated_message']}\n"
+    
     # Tạo thông tin món ăn
     foods_text = ""
-    for i, food in enumerate(food_info[:10], 1):  # Chỉ lấy 5 món đầu để tránh prompt quá dài
-        foods_text += f"{i}. {food['name']}"
-        if food.get('description'):
-            foods_text += f" - {food['description']}"
-        if food.get('cook_method'):
-            foods_text += f" (Chế biến: {food['cook_method']})"
-        foods_text += "\n"
+    if food_info:
+        for i, food in enumerate(food_info[:10], 1):  # Chỉ lấy 5 món đầu để tránh prompt quá dài
+            foods_text += f"{i}. {food['name']}"
+            if food.get('description'):
+                foods_text += f" - {food['description']}"
+            if food.get('cook_method'):
+                foods_text += f" (Chế biến: {food['cook_method']})"
+            foods_text += "\n"
+    else:
+        foods_text = "Không tìm thấy món ăn phù hợp với các tiêu chí hiện tại."
     
     # Tạo thông tin bệnh
     conditions_text = "không có bệnh đặc biệt"
@@ -147,6 +156,9 @@ def get_natural_response_prompt(question: str, user_info: dict, food_info: list,
     if weather and time_of_day:
         context_text = f"Thời tiết hiện tại: {weather}, Thời gian: {time_of_day}"
     
+    # Xác định xem có món ăn hay không để điều chỉnh prompt
+    has_foods = bool(food_info)
+    
     prompt = f"""
 Bạn là một chuyên gia dinh dưỡng thân thiện và am hiểu về lĩnh vực ẩm thực của Việt Nam. Hãy tạo một câu trả lời tự nhiên, thân thiện và hữu ích cho người dùng dựa trên thông tin sau:
 
@@ -161,21 +173,25 @@ THÔNG TIN NGƯỜI DÙNG:
 - Cách chế biến ưa thích: {cooking_text}
 - {context_text}
 
+{constraints_text}
+
 CÁC MÓN ĂN PHÙ HỢP:
 {foods_text}
 
 YÊU CẦU:
 1. Tạo câu trả lời tự nhiên, thân thiện như đang trò chuyện với bạn bè
-2. Giải thích ngắn gọn tại sao những món này phù hợp với người dùng
+2. {'Giải thích ngắn gọn tại sao những món này phù hợp với người dùng' if has_foods else 'Giải thích ngắn gọn tại sao không tìm thấy món ăn phù hợp và đưa ra lời khuyên'}
 3. Đề cập đến các yếu tố như BMI, bệnh lý, dị ứng nếu có
 4. Nếu có thông tin thời tiết/thời gian, hãy đề cập đến sự phù hợp
-5. Khuyến khích người dùng thử các món ăn được gợi ý
+5. {'Khuyến khích người dùng thử các món ăn được gợi ý' if has_foods else 'Đưa ra lời khuyên thay thế hoặc gợi ý điều chỉnh tiêu chí tìm kiếm'}
 6. Độ dài câu trả lời khoảng 2-4 câu, không quá dài
 7. Sử dụng ngôn ngữ tự nhiên, không cứng nhắc như bot
 8. LƯU Ý ĐẶC BIỆT: CHỈ LẤY CÁC MÓN ĂN PHÙ HỢP TỪ DỮ LIỆU CỦA TÔI , KHÔNG THÊM MÓN ĂN BÊN NGOÀI NÀO KHÁC
-9. Lưu ý:  liệt kê lại tên các món ăn trong câu trả lời, đề cập đến chúng một cách tự nhiên.
-10. Lưu ý:  không được thêm bất kỳ món ăn nào bên ngoài dữ liệu của tôi.
-12. Nếu có thời tiết thì đề cập đến thời tiết
+9. {'Liệt kê lại tên các món ăn trong câu trả lời, đề cập đến chúng một cách tự nhiên' if has_foods else 'Không đề xuất món ăn nào ngoài dữ liệu'}
+10. Lưu ý: không được thêm bất kỳ món ăn nào bên ngoài dữ liệu của tôi
+11. Nếu có thông tin gì khác thì cũng nói rõ ràng cho người dùng
+12. Trả lời cục súc, có thể chửi thề, không quá dài, không quá ngắn
+13. {'Nếu không có món ăn phù hợp, hãy khuyên người dùng thử thay đổi tiêu chí hoặc đưa ra lời khuyên chung về dinh dưỡng' if not has_foods else ''}
 """
     
     return prompt

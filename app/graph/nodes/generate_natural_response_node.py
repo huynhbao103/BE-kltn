@@ -16,16 +16,11 @@ def generate_natural_response(state: Dict[str, Any]) -> Dict[str, Any]:
         selected_cooking_methods = state.get("selected_cooking_methods", [])
         weather = state.get("weather", "")
         time_of_day = state.get("time_of_day", "")
+        aggregated_result = state.get("aggregated_result", {})
+        neo4j_result = state.get("neo4j_result", {})
         
         # Lấy danh sách món ăn đã rerank
         ranked_foods = rerank_result.get("ranked_foods", []) if rerank_result else []
-        
-        if not ranked_foods:
-            return {
-                **state,
-                "natural_response": "Xin lỗi, tôi không tìm thấy món ăn nào phù hợp với yêu cầu của bạn.",
-                "step": "natural_response_generated"
-            }
         
         # Chuẩn bị thông tin cho LLM
         user_info = {
@@ -51,6 +46,17 @@ def generate_natural_response(state: Dict[str, Any]) -> Dict[str, Any]:
                 "carbs": food.get("carbs", 0)
             })
         
+        # Thu thập thông tin constraints để giải thích cho LLM
+        constraints_info = {
+            "bmi_checked": neo4j_result.get("bmi_checked", []),
+            "conditions_checked": neo4j_result.get("conditions_checked", []),
+            "cooking_methods_checked": neo4j_result.get("cooking_methods_checked", []),
+            "aggregated_status": aggregated_result.get("status", ""),
+            "aggregated_message": aggregated_result.get("message", ""),
+            "has_foods": len(ranked_foods) > 0,
+            "excluded_methods": state.get("excluded_cooking_methods", [])
+        }
+        
         # Tạo prompt cho LLM
         prompt = get_natural_response_prompt(
             question=question,
@@ -59,7 +65,8 @@ def generate_natural_response(state: Dict[str, Any]) -> Dict[str, Any]:
             cooking_methods=selected_cooking_methods,
             weather=weather,
             time_of_day=time_of_day,
-            topic_classification=topic_classification
+            topic_classification=topic_classification,
+            constraints_info=constraints_info
         )
         
         # Gọi LLM để tạo câu trả lời tự nhiên

@@ -457,11 +457,11 @@ def generate_final_result(state: WorkflowState) -> WorkflowState:
         final_foods = []
         newly_suggested_food_ids = []
         
-        # Thêm warning message nếu có cooking request
-        cooking_request_warning = state.get("cooking_request_warning")
+        # Thêm warning message nếu có cooking request (DISABLED)
+        # cooking_request_warning = state.get("cooking_request_warning")
         warning_parts = []
-        if cooking_request_warning:
-            warning_parts.append(f"💡 Lưu ý: {cooking_request_warning}")
+        # if cooking_request_warning:
+        #     warning_parts.append(f"💡 Lưu ý: {cooking_request_warning}")
         
         # Thêm thông tin cảnh báo dị ứng
         filtered_result = state.get("filtered_result", {})

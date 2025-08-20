@@ -124,7 +124,7 @@ def generate_selection_prompts(state: WorkflowState) -> WorkflowState:
             if methods_for_bmi:
                 original_methods_before_bmi = cooking_methods_filtered.copy()
                 cooking_methods_filtered.intersection_update(methods_for_bmi)
-                analysis_steps.append({"step": "cooking_method_filter_bmi", "message": f"Sau khi lọc theo BMI ('{bmi_category}'), các phương pháp nấu còn lại: {', '.join(cooking_methods_filtered) if cooking_methods_filtered else 'Không có.'}"})
+                analysis_steps.append({"step": "cooking_method_filter_bmi", "message": f"Sau khi lọc theo BMI {bmi_category}, các phương pháp nấu còn lại: {', '.join(cooking_methods_filtered) if cooking_methods_filtered else 'Không có.'}"})
 
         # Lọc theo context
         weather = state.get("weather")
@@ -169,6 +169,49 @@ def generate_selection_prompts(state: WorkflowState) -> WorkflowState:
         }
     except Exception as e:
         return {**state, "error": f"Lỗi trong bước tạo prompt: {str(e)}", "step": "prompt_generation_error"}
+
+def filter_by_ingredients(state: WorkflowState) -> WorkflowState:
+    """
+    Node này lọc kết quả từ Neo4j dựa trên nguyên liệu đã chọn,
+    sử dụng MongoDB.
+    """
+    try:
+        selected_ingredients = state.get("selected_ingredients")
+        print(f"[DEBUG] Bước filter_by_ingredients: Các nguyên liệu đã chọn: {selected_ingredients}")
+
+        if not selected_ingredients:
+            # Nếu không có nguyên liệu nào được chọn, bỏ qua bước lọc
+            print("[DEBUG] Bước filter_by_ingredients: Bỏ qua vì không có nguyên liệu nào được chọn.")
+            return {**state, "step": "ingredient_filter_skipped"}
+
+        neo4j_result = state.get("neo4j_result", {})
+        all_foods = neo4j_result.get("foods", {})
+        
+        # Tập hợp tất cả dish_id từ kết quả của Neo4j
+        all_dish_ids = []
+        for key, value in all_foods.items():
+            for food in value.get("advanced", []):
+                if food.get("dish_id"):
+                    all_dish_ids.append(food["dish_id"])
+        
+        print(f"[DEBUG] Bước filter_by_ingredients: Tìm thấy {len(all_dish_ids)} món ăn từ bước trước để lọc.")
+        
+        # Lọc các ID này bằng MongoDB
+        filtered_dish_ids = mongo_service.filter_dishes_by_ingredients(all_dish_ids, selected_ingredients)
+        print(f"[DEBUG] Bước filter_by_ingredients: Sau khi lọc với MongoDB, còn lại {len(filtered_dish_ids)} món ăn.")
+
+        # Cập nhật lại neo4j_result, chỉ giữ lại các món ăn có ID đã được lọc
+        filtered_foods = {}
+        for key, value in all_foods.items():
+            filtered_advanced = [food for food in value.get("advanced", []) if food.get("dish_id") in filtered_dish_ids]
+            if filtered_advanced:
+                filtered_foods[key] = {**value, "advanced": filtered_advanced}
+        
+        neo4j_result["foods"] = filtered_foods
+        
+        return {**state, "neo4j_result": neo4j_result, "step": "ingredients_filtered"}
+    except Exception as e:
+        return {**state, "error": f"Lỗi khi lọc theo nguyên liệu: {str(e)}", "step": "ingredient_filter_error"}
 
 def identify_user(state: WorkflowState) -> WorkflowState:
     """Node 1: Xác định user từ user_id """
@@ -621,29 +664,30 @@ def should_continue(state: WorkflowState) -> str:
     elif step == "user_identified":
         return "classify_topic"
     elif step == "topic_classified":
-        # Sau khi phân loại chủ đề, kiểm tra loại yêu cầu
         topic_classification = state.get("topic_classification")
         if topic_classification == "không liên quan":
             return "end_rejected"
-        elif topic_classification == "cooking_request":
-            return "process_cooking_request" # Xử lý yêu cầu cooking method
-        else:
-            return "calculate_bmi" # Chuyển đến tính BMI cho yêu cầu tư vấn chung
+        # Tất cả các luồng khác đều cần đi qua calculate_bmi
+        return "calculate_bmi"
+        
     elif step == "bmi_calculated":
-         return "generate_selection_prompts"
+        topic_classification = state.get("topic_classification")
+        if topic_classification == "cooking_request":
+            return "process_cooking_request"
+        else: # "tư vấn chung" và các trường hợp khác
+            return "generate_selection_prompts"
+
+    elif step == "cooking_request_processed":
+        return "query_neo4j"
+        
     elif step == "awaiting_selections":
         return "end_success"
     elif step == "selections_made":
-        return "query_neo4j"
-
-    elif step == "cooking_request_processed":
-        # Sau khi xử lý cooking request, đi thẳng đến query neo4j
-        return "query_neo4j"
-    elif step == "cooking_method_selected":
-        # Step này chỉ được gọi khi FE gửi lên cả emotion và cooking method
-        return "query_neo4j"
+        return "query_neo4j" # Đầu tiên truy vấn neo4j
     elif step == "neo4j_queried":
-        return "filter_allergies"
+        return "filter_by_ingredients" # Sau đó lọc bằng mongo
+    elif step == "ingredients_filtered" or step == "ingredient_filter_skipped":
+        return "filter_allergies" # Sau đó lọc dị ứng
     elif step == "allergies_filtered":
         return "aggregate_foods"
     elif step == "foods_aggregated":
@@ -745,6 +789,7 @@ def create_workflow() -> StateGraph:
     workflow.add_node("generate_selection_prompts", generate_selection_prompts)
     workflow.add_node("process_cooking_request", process_cooking_request) # Thêm node xử lý cooking request
     workflow.add_node("query_neo4j", query_neo4j)
+    workflow.add_node("filter_by_ingredients", filter_by_ingredients)
     workflow.add_node("filter_allergies", filter_allergies)
     workflow.add_node("aggregate_foods", aggregate_foods)
     workflow.add_node("rerank_foods", rerank_foods_wrapper)
@@ -775,8 +820,7 @@ def create_workflow() -> StateGraph:
         "classify_topic",
         should_continue,
         {
-            "process_cooking_request": "process_cooking_request",
-            "calculate_bmi": "calculate_bmi", # Sửa luồng
+            "calculate_bmi": "calculate_bmi", # Luôn đi đến calculate_bmi
             "end_rejected": "end_rejected"
         }
     )
@@ -786,6 +830,7 @@ def create_workflow() -> StateGraph:
         "calculate_bmi",
         should_continue,
         {
+            "process_cooking_request": "process_cooking_request", # Thêm đường đi mới
             "generate_selection_prompts": "generate_selection_prompts",
             "end_with_error": "end_with_error"
         }
@@ -813,10 +858,20 @@ def create_workflow() -> StateGraph:
         "query_neo4j",
         should_continue,
         {
+            "filter_by_ingredients": "filter_by_ingredients",
+            "end_with_error": "end_with_error"
+        }
+    )
+
+    workflow.add_conditional_edges(
+        "filter_by_ingredients",
+        should_continue,
+        {
             "filter_allergies": "filter_allergies",
             "end_with_error": "end_with_error"
         }
     )
+
     workflow.add_conditional_edges(
         "filter_allergies",
         should_continue,

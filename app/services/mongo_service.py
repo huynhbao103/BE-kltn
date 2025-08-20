@@ -340,6 +340,34 @@ class MongoService:
             print(f"Error getting cook methods by ingredients: {e}")
             return []
 
+    def filter_dishes_by_ingredients(self, dish_ids: List[str], ingredients: List[str]) -> List[str]:
+        """
+        Lọc một danh sách các dish_ids, chỉ giữ lại những món ăn
+        chứa ít nhất một trong các nguyên liệu được cung cấp (sử dụng regex).
+        """
+        if not ingredients:
+            return dish_ids # Nếu không chọn nguyên liệu nào, không cần lọc
+        try:
+            dishes_collection = self.get_dishes_collection()
+
+            # Tạo một biểu thức regex để tìm bất kỳ nguyên liệu nào trong danh sách, không phân biệt chữ hoa/thường
+            # Ví dụ: ingredients = ["Thịt heo", "Cà tím"] -> regex = /Thịt heo|Cà tím/i
+            regex_pattern = "|".join(ingredients)
+
+            query = {
+                "neo4j_id": {"$in": dish_ids},
+                "ingredients": {"$regex": regex_pattern, "$options": "i"}
+            }
+            projection = {"neo4j_id": 1}
+
+            print(f"[DEBUG] MongoDB Query in filter_dishes_by_ingredients: {query}")
+
+            results = list(dishes_collection.find(query, projection))
+            return [result["neo4j_id"] for result in results]
+        except Exception as e:
+            print(f"Error filtering dishes by ingredients: {e}")
+            return []
+
     def get_all_ingredients(self) -> List[str]:
         """
         Lấy tất cả các nguyên liệu từ collection 'ingredients'

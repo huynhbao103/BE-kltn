@@ -1,5 +1,6 @@
 from app.config import driver
 from typing import List, Dict, Any
+from app.services.mongo_service import mongo_service
 
 class GraphSchemaService:
     """Service để khám phá và làm việc với schema graph hiện tại"""
@@ -425,3 +426,38 @@ class GraphSchemaService:
         with driver.session() as session:
             result = session.run(query, **params)
             return [record.data() for record in result]
+
+    @staticmethod
+    def get_all_ingredients():
+        """Lấy tất cả các thành phần (Ingredient) từ MongoDB."""
+        return mongo_service.get_all_ingredients()
+
+    @classmethod
+    def get_cook_methods_by_ingredients(cls, ingredients: list) -> list:
+        """
+        Lấy các phương pháp chế biến phù hợp với danh sách nguyên liệu.
+        """
+        return mongo_service.get_cook_methods_by_ingredients(ingredients)
+
+    @classmethod
+    def get_diet_recommendations_by_disease(cls, disease_name: str) -> list:
+        # Tương tự như trên, nhưng có cache
+        cache_key = f"diet_recs_for_{disease_name}"
+        cached_data = cls.cache.get(cache_key)
+        if cached_data:
+            return cached_data
+        
+        query = """
+        MATCH (d:Disease {name: $disease_name})-[:RECOMMENDS]->(diet:Diet)
+        RETURN diet.name as diet_name
+        """
+        
+        try:
+            with driver.session() as session:
+                result = session.run(query, disease_name=disease_name)
+                diet_names = [record["diet_name"] for record in result]
+                cls.cache.set(cache_key, diet_names, timeout=3600)  # Cache for 1 hour
+                return diet_names
+        except Exception as e:
+            print(f"Error querying diet recommendations for {disease_name}: {e}")
+            return []

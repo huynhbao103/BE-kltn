@@ -4,7 +4,7 @@ from typing import Optional, List
 import jwt
 from app.graph.engine import (
     run_langgraph_workflow_until_selection, 
-    continue_workflow_with_cooking_method
+    continue_workflow_with_selections
 )
 from app.config import JWT_SECRET_KEY
 
@@ -17,9 +17,11 @@ class WorkflowInput(BaseModel):
     session_id: Optional[str] = None
     ignore_context_filter: bool = False
 
-class CookingMethodInput(BaseModel):
+class SelectionsInput(BaseModel):
     session_id: str
+    ingredients: List[str]
     cooking_methods: List[str]
+
 def get_user_id_from_token(authorization: Optional[str] = Header(None)) -> str:
     """
     Lấy user_id từ JWT token trong Authorization header
@@ -92,17 +94,18 @@ def process_with_langgraph(
             detail=f"Lỗi xử lý workflow: {str(e)}"
         )
 
-@router.post("/process-cooking")
-def process_cooking_method(
-    data: CookingMethodInput,
+@router.post("/process-selections")
+def process_selections(
+    data: SelectionsInput,
     user_id: str = Depends(get_user_id_from_token)
 ):
     """
-    Nhận phương pháp chế biến, trả về kết quả cuối cùng.
+    Nhận các lựa chọn (nguyên liệu và phương pháp chế biến) và trả về kết quả cuối cùng.
     """
     try:
-        result = continue_workflow_with_cooking_method(
+        result = continue_workflow_with_selections(
             session_id=data.session_id,
+            ingredients=data.ingredients,
             cooking_methods=data.cooking_methods,
             user_id=user_id
         )
@@ -116,10 +119,6 @@ def process_cooking_method(
             status_code=500, 
             detail=f"Lỗi xử lý workflow: {str(e)}"
         )
-
-
-
-
 
 @router.get("/workflow-info")
 def get_workflow_info():

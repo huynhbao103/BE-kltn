@@ -19,6 +19,27 @@ def generate_natural_response(state: Dict[str, Any]) -> Dict[str, Any]:
         aggregated_result = state.get("aggregated_result", {})
         neo4j_result = state.get("neo4j_result", {})
         
+        # Kiểm tra nếu rerank LLM đã cung cấp lời giải thích
+        if (rerank_result and 
+            rerank_result.get("status") == "llm_explanation_provided" and 
+            rerank_result.get("llm_explanation")):
+            # Lấy lời giải thích từ rerank LLM
+            llm_explanation = rerank_result.get("llm_explanation")
+            
+            # Kết hợp với gợi ý thay thế
+            combined_response = f"""Tôi rất tiếc nhưng danh sách món ăn hiện tại có món chứa nguyên liệu mà bạn bị dị ứng.
+
+{llm_explanation}
+
+Để thay đổi, bạn có thể xem xét thêm các món ăn chế biến từ rau cải, hạt, hoặc đậu phụ để đảm bảo cung cấp đủ chất dinh dưỡng. Đồng thời, hãy thêm vào chế độ ăn uống hàng ngày của bạn các loại thực phẩm giàu chất xơ và protein thực vật để duy trì sức khỏe tốt. Chúc bạn có bữa ăn ngon miệng và bổ dưỡng!"""
+            
+            print(f"[DEBUG] Using LLM explanation from rerank and adding suggestions")
+            return {
+                **state,
+                "natural_response": combined_response.strip(),
+                "step": "natural_response_from_llm_explanation"
+            }
+        
         # Lấy danh sách món ăn đã rerank
         ranked_foods = rerank_result.get("ranked_foods", []) if rerank_result else []
         

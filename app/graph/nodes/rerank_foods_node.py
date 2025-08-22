@@ -155,7 +155,13 @@ def rerank_foods(state: Dict[str, Any]) -> Dict[str, Any]:
   3.  **Sở thích:** Phù hợp với cách chế biến ({cooking_text}).
   4.  Mức độ phổ biến và cân bằng dinh dưỡng.
 - **Loại bỏ** những món không thực sự phù hợp với các tiêu chí trên.
-- **TUYỆT ĐỐI KHÔNG ĐƯỢC chọn lại bất kỳ món ăn nào có id nằm trong danh sách đã cung cấp ở trên. TRỪ khi câu hỏi yêu cầu chọn lại món đã gợi ý trước đó.**
+- **TUYỆT ĐỐI KHÔNG ĐƯỢC chọn lại bất kỳ món ăn nào có id nằm trong danh sách đã cung cấp ở trên. TRỪ khi câu hỏi yêu cầu chọn lại món đã gợi ý trước đó.
+-**Nếu có món ăn phù hợp**: Trả về **CHỈ danh sách TÊN các món ăn** đã được lọc và sắp xếp.
+- **Nếu User CHỈ ĐỊNH YÊU CẦU MỘT MÓN CỤ THỂ**: Trả về CHỈ MỘT MÓN ĂN.
+- **Nếu KHÔNG có món ăn phù hợp do dị ứng**: Trả về lời giải thích rõ ràng về lý do không thể gợi ý món ăn, bao gồm:
+  - Lời xin lỗi
+  - Giải thích về dị ứng (không nêu tên món ăn cụ thể nếu có thể gây dị ứng)
+  - Lý do tại sao món ăn không phù hợp
 
 
 **Bước 4: Trả về kết quả.**
@@ -214,20 +220,46 @@ def rerank_foods(state: Dict[str, Any]) -> Dict[str, Any]:
                     }
                 }
             else:
-                print("DEBUG: LLM did not select any foods, returning empty list")
-                # Nếu LLM không chọn món nào, trả về danh sách rỗng
-                result = {
-                    "status": "success",
-                    "message": f"Không tìm thấy món ăn phù hợp với yêu cầu của bạn",
-                    "ranked_foods": [],
-                    "total_count": 0,
-                    "rerank_criteria": {
-                        "bmi_category": bmi_category,
-                        "medical_conditions": real_conditions,
-                        "emotion": selected_emotion,
-                        "cooking_methods": selected_cooking_methods
+                print("DEBUG: LLM did not select any foods, checking if it provided explanation")
+                
+                # Kiểm tra xem LLM có trả về lời giải thích về dị ứng hoặc lý do không
+                explanation_keywords = [
+                    "xin lỗi", "không thể", "không phù hợp", "dị ứng", "gây dị ứng",
+                    "không an toàn", "không có món", "không tìm thấy"
+                ]
+                
+                has_explanation = any(keyword in llm_response.lower() for keyword in explanation_keywords)
+                
+                if has_explanation and len(llm_response.strip()) > 30:
+                    # LLM đã trả về lời giải thích, sử dụng nó
+                    print(f"DEBUG: LLM provided explanation: {llm_response[:100]}...")
+                    result = {
+                        "status": "llm_explanation_provided",
+                        "message": "LLM đã cung cấp lời giải thích",
+                        "ranked_foods": [],
+                        "total_count": 0,
+                        "llm_explanation": llm_response.strip(),
+                        "rerank_criteria": {
+                            "bmi_category": bmi_category,
+                            "medical_conditions": real_conditions,
+                            "emotion": selected_emotion,
+                            "cooking_methods": selected_cooking_methods
+                        }
                     }
-                }
+                else:
+                    # LLM không chọn món nào và không có lời giải thích rõ ràng
+                    result = {
+                        "status": "success",
+                        "message": f"Không tìm thấy món ăn phù hợp với yêu cầu của bạn",
+                        "ranked_foods": [],
+                        "total_count": 0,
+                        "rerank_criteria": {
+                            "bmi_category": bmi_category,
+                            "medical_conditions": real_conditions,
+                            "emotion": selected_emotion,
+                            "cooking_methods": selected_cooking_methods
+                        }
+                    }
                 
         except Exception as e:
             print(f"DEBUG: LLM error: {e}")

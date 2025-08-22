@@ -7,8 +7,8 @@ client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
 
 def check_mode(user_question: str) -> str:
     prompt = f"""Phân loại câu hỏi sau.
-Nếu câu hỏi liên quan đến việc gợi ý món ăn, tư vấn dinh dưỡng, hoặc các chủ đề về thực phẩm và sức khỏe, hãy trả lời là "tư vấn".
-Nếu câu hỏi yêu cầu cụ thể về cách chế biến (như chiên, nướng, luộc, hấp, xào, kho, nấu canh, salad, smoothie, etc,...) hỏi về món khác ngoài các món trên hãy trả lời là "cooking_request".
+Nếu câu hỏi liên quan đến việc gợi ý món ăn, tư vấn dinh dưỡng, hoặc các chủ đề về sức khỏe, hãy trả lời là "tư vấn".
+Nếu câu hỏi yêu cầu cụ thể về cách chế biến (như chiên, nướng, luộc, hấp, xào, kho, nấu canh, salad, chay, mặn, ngọt, đắng, cay, smoothie, etc,...) hỏi về món khác ngoài các món trên hãy trả lời là "cooking_request".
 Nếu câu hỏi yêu cầu hỏi về món khác ( như món khác, món nào khác? tôi không thích món các món này, ect..) hãy trả lời là "cooking_request".
 Nếu không, hãy trả lời là "không liên quan".
 Chỉ trả lời duy nhất "tư vấn", "cooking_request" hoặc "không liên quan".

@@ -18,6 +18,7 @@ def generate_natural_response(state: Dict[str, Any]) -> Dict[str, Any]:
         time_of_day = state.get("time_of_day", "")
         aggregated_result = state.get("aggregated_result", {})
         neo4j_result = state.get("neo4j_result", {})
+        filtered_result = state.get("filtered_result", {})
         
         # Kiểm tra nếu rerank LLM đã cung cấp lời giải thích
         if (rerank_result and 
@@ -42,6 +43,29 @@ def generate_natural_response(state: Dict[str, Any]) -> Dict[str, Any]:
         
         # Lấy danh sách món ăn đã rerank
         ranked_foods = rerank_result.get("ranked_foods", []) if rerank_result else []
+        
+        # Kiểm tra dị ứng từ nguyên liệu và tạo cảnh báo
+        allergy_warnings = []
+        if filtered_result and filtered_result.get("allergy_warnings"):
+            allergy_warnings = filtered_result.get("allergy_warnings", {})
+            print(f"[DEBUG] Found allergy warnings: {allergy_warnings}")
+        
+        # Tạo thông tin cảnh báo dị ứng
+        allergy_alert = ""
+        if allergy_warnings:
+            allergy_alert = "\n⚠️ CẢNH BÁO DỊ ỨNG:\n"
+            for source_key, warnings in allergy_warnings.items():
+                for warning in warnings:
+                    dish_name = warning.get("dish_name", "Unknown")
+                    warning_text = warning.get("warnings", [])
+                    if warning_text:
+                        allergy_alert += f"• {dish_name}: {', '.join(warning_text)}\n"
+            print(f"[DEBUG] Generated allergy alert: {allergy_alert}")
+        
+        # Debug: Kiểm tra thông tin user allergies
+        user_allergies = user_data.get("allergies", [])
+        print(f"[DEBUG] User allergies: {user_allergies}")
+        print(f"[DEBUG] Has allergy warnings: {bool(allergy_warnings)}")
         
         # Chuẩn bị thông tin cho LLM
         user_info = {
@@ -75,7 +99,9 @@ def generate_natural_response(state: Dict[str, Any]) -> Dict[str, Any]:
             "aggregated_status": aggregated_result.get("status", ""),
             "aggregated_message": aggregated_result.get("message", ""),
             "has_foods": len(ranked_foods) > 0,
-            "excluded_methods": state.get("excluded_cooking_methods", [])
+            "excluded_methods": state.get("excluded_cooking_methods", []),
+            "allergy_warnings": allergy_warnings,  # Thêm thông tin cảnh báo dị ứng
+            "allergy_alert": allergy_alert  # Thêm cảnh báo dị ứng
         }
         
         # Tạo prompt cho LLM
@@ -92,6 +118,10 @@ def generate_natural_response(state: Dict[str, Any]) -> Dict[str, Any]:
         
         # Gọi LLM để tạo câu trả lời tự nhiên
         natural_response = LLMService.get_completion(prompt)
+        
+        # Thêm cảnh báo dị ứng vào câu trả lời nếu có
+        if allergy_alert:
+            natural_response = allergy_alert + "\n" + natural_response
         
         return {
             **state,

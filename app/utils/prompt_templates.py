@@ -122,6 +122,17 @@ def get_natural_response_prompt(question: str, user_info: dict, food_info: list,
     if constraints_info:
         if constraints_info.get("aggregated_message"):
             constraints_text += f"ℹ️ Thông tin tìm kiếm: {constraints_info['aggregated_message']}\n"
+        
+        # Thêm thông tin cảnh báo dị ứng nếu có
+        if constraints_info.get("allergy_warnings"):
+            constraints_text += "\n⚠️ CẢNH BÁO DỊ ỨNG:\n"
+            allergy_warnings = constraints_info.get("allergy_warnings", {})
+            for source_key, warnings in allergy_warnings.items():
+                for warning in warnings:
+                    dish_name = warning.get("dish_name", "Unknown")
+                    warning_text = warning.get("warnings", [])
+                    if warning_text:
+                        constraints_text += f"• {dish_name}: {', '.join(warning_text)}\n"
     
     # Tạo thông tin món ăn
     foods_text = ""
@@ -159,6 +170,17 @@ def get_natural_response_prompt(question: str, user_info: dict, food_info: list,
     # Xác định xem có món ăn hay không để điều chỉnh prompt
     has_foods = bool(food_info)
     
+    # Thêm hướng dẫn về xử lý dị ứng
+    allergy_instruction = ""
+    if allergies and allergies != ["Không có"]:
+        allergy_instruction = f"""
+LƯU Ý QUAN TRỌNG VỀ DỊ ỨNG:
+- Người dùng bị dị ứng với: {allergies_text}
+- Nếu có món ăn chứa nguyên liệu gây dị ứng, hãy nhắc nhở rõ ràng
+- Khuyến khích người dùng cẩn thận khi chế biến và ăn uống
+- Đề xuất cách thay thế hoặc điều chỉnh món ăn để tránh dị ứng
+"""
+    
     prompt = f"""
 Bạn là một chuyên gia dinh dưỡng thân thiện và am hiểu về lĩnh vực ẩm thực của Việt Nam. Hãy tạo một câu trả lời tự nhiên, thân thiện và hữu ích cho người dùng dựa trên thông tin sau:
 
@@ -178,6 +200,8 @@ THÔNG TIN NGƯỜI DÙNG:
 CÁC MÓN ĂN PHÙ HỢP:
 {foods_text}
 
+{allergy_instruction}
+
 YÊU CẦU:
 1. Tạo câu trả lời tự nhiên, thân thiện như đang trò chuyện với bạn bè
 2. {'Giải thích ngắn gọn tại sao những món này phù hợp với người dùng' if has_foods else 'Giải thích ngắn gọn tại sao không tìm thấy món ăn phù hợp và đưa ra lời khuyên'}
@@ -192,6 +216,8 @@ YÊU CẦU:
 11. Nếu có thông tin gì khác thì cũng nói rõ ràng cho người dùng
 12. Trả lời cục súc, có thể chửi thề, không quá dài, không quá ngắn
 13. {'Nếu không có món ăn phù hợp, hãy khuyên người dùng thử thay đổi tiêu chí hoặc đưa ra lời khuyên chung về dinh dưỡng' if not has_foods else ''}
+14. QUAN TRỌNG: Nếu có cảnh báo dị ứng, hãy nhắc nhở người dùng cẩn thận và đưa ra lời khuyên cụ thể về cách tránh dị ứng
+15. Nếu món ăn có chứa nguyên liệu gây dị ứng, hãy đề xuất cách thay thế hoặc điều chỉnh để an toàn
 """
     
     return prompt

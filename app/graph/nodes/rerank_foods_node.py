@@ -166,7 +166,7 @@ def rerank_foods(state: Dict[str, Any]) -> Dict[str, Any]:
 
 **Bước 4: Trả về kết quả.**
 - Trả về **CHỈ danh sách TÊN các món ăn** đã được lọc và sắp xếp.
-- Nếu User CHỈ ĐỊNH YÊU CẦU MỘT MÓN CỤ THỂ hoặc GẦN GIỐNG MỘT MÓN CỤ THỂ đó., BẠN PHẢI TRẢ VỀ CHỈ MỘT MÓN ĂN.
+- Nếu User CHỈ ĐỊNH YÊU CẦU MỘT MÓN CỤ THỂ hoặc GẦN GIỐNG MỘT MÓN CỤ THỂ đó. BẠN PHẢI TRẢ VỀ CHỈ MỘT MÓN ĂN.
 - Mỗi món ăn trên một dòng. Không thêm số thứ tự, giải thích hay bất kỳ thông tin nào khác.
 """
         
@@ -188,7 +188,7 @@ def rerank_foods(state: Dict[str, Any]) -> Dict[str, Any]:
                         {"role": "user", "content": prompt}
                     ],
                     max_tokens=2000,
-                    temperature=0.7
+                    temperature=0.1
                 )
                 
                 llm_response = response.choices[0].message.content

@@ -85,7 +85,6 @@ def generate_selection_prompts(state: WorkflowState) -> WorkflowState:
             analysis_steps.append({"step": "disease_analysis", "message": "Bạn không có bệnh lý nền nào được ghi nhận."})
 
         bmi_category = bmi_result.get("bmi_category")
-        analysis_steps.append({"step": "bmi_analysis", "message": f"Chỉ số BMI của bạn được phân loại là '{bmi_category}'."})
 
         # Tạo ingredient prompt
         all_ingredients = GraphSchemaService.get_all_ingredients()
@@ -99,8 +98,8 @@ def generate_selection_prompts(state: WorkflowState) -> WorkflowState:
         cooking_methods_filtered = set(GraphSchemaService.get_all_cooking_methods())
         # Lọc theo bệnh
         medical_conditions = [c for c in user_data.get("medicalConditions", []) if c not in ["Không có", "Bình thường"]]
+        methods_from_disease = set()
         if medical_conditions:
-            methods_from_disease = set()
             for condition in medical_conditions:
                 methods = GraphSchemaService.get_cook_methods_by_disease(condition)
                 if methods:
@@ -119,12 +118,13 @@ def generate_selection_prompts(state: WorkflowState) -> WorkflowState:
 
         # Lọc theo BMI
         bmi_category = bmi_result.get("bmi_category")
+        bmi_methods = set()
         if bmi_category:
             methods_for_bmi = GraphSchemaService.get_cook_methods_by_bmi(bmi_category)
             if methods_for_bmi:
                 original_methods_before_bmi = cooking_methods_filtered.copy()
                 cooking_methods_filtered.intersection_update(methods_for_bmi)
-                analysis_steps.append({"step": "cooking_method_filter_bmi", "message": f"Sau khi lọc theo BMI {bmi_category}, các phương pháp nấu còn lại: {', '.join(cooking_methods_filtered) if cooking_methods_filtered else 'Không có.'}"})
+                analysis_steps.append({"step": "bmi_analysis", "message": f"Sau khi lọc theo BMI {bmi_category}, các phương pháp nấu còn lại: {', '.join(cooking_methods_filtered) if cooking_methods_filtered else 'Không có.'}"})
 
         # Lọc theo context
         weather = state.get("weather")
@@ -133,6 +133,7 @@ def generate_selection_prompts(state: WorkflowState) -> WorkflowState:
         
         should_apply_context = (weather and time_of_day and not ignore_context_filter)
         
+        suggested_methods = None
         if should_apply_context:
             context_name, suggested_methods = GraphSchemaService.get_context_and_cook_methods(weather, time_of_day)
             if context_name and suggested_methods:
@@ -140,6 +141,20 @@ def generate_selection_prompts(state: WorkflowState) -> WorkflowState:
                 cooking_methods_filtered.intersection_update(suggested_methods)
             else:
                 analysis_steps.append({"step": "context_analysis_failed", "message": f"Không tìm thấy gợi ý đặc biệt cho thời tiết '{weather}' và thời điểm '{time_of_day}'. Giữ nguyên danh sách trước đó."})
+
+        # Thêm mục tổng hợp chung: giao giữa bệnh lý, BMI và bối cảnh (không tính nguyên liệu)
+        all_methods = set(GraphSchemaService.get_all_cooking_methods())
+        general_methods = set(all_methods)
+        if methods_from_disease:
+            general_methods.intersection_update(methods_from_disease)
+        if bmi_methods:
+            general_methods.intersection_update(bmi_methods)
+        if suggested_methods:
+            general_methods.intersection_update(set(suggested_methods))
+        analysis_steps.append({
+            "step": "general_summary",
+            "message": f"Các cách chế biến phù hợp dựa trên bệnh lý, BMI và bối cảnh: {', '.join(sorted(general_methods)) if general_methods else 'Không có.'}"
+        })
         
         cooking_method_prompt = {
             "prompt_type": "select_cooking_methods",
